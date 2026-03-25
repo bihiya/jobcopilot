@@ -25,16 +25,24 @@ SERVER_URL="http://localhost:4000"
 npm install
 ```
 
-## 3) Prisma setup (apps/web)
+## 3) One command DB + migrate (out-of-the-box)
+
+```bash
+npm run setup:db
+```
+
+This command:
+- starts local PostgreSQL via Docker Compose
+- waits until PostgreSQL is healthy
+- runs `prisma migrate dev`
+
+## 4) Prisma client generation (apps/web)
 
 ```bash
 npm run prisma:generate
-npm run prisma:migrate
 ```
 
-> `prisma migrate dev` requires PostgreSQL running and reachable by `DATABASE_URL`.
-
-## 4) Run both apps
+## 5) Run both apps
 
 ```bash
 npm run dev
@@ -48,6 +56,13 @@ You can also run separately:
 ```bash
 npm run dev:web
 npm run dev:server
+```
+
+### Docker shortcuts
+
+```bash
+npm run db:up    # start postgres
+npm run db:down  # stop postgres
 ```
 
 ## Implemented endpoints
