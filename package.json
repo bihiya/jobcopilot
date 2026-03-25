@@ -1,0 +1,24 @@
+{
+  "name": "jobcopilot",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/server"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace web\" \"npm run dev --workspace server\"",
+    "dev:web": "npm run dev --workspace web",
+    "dev:server": "npm run dev --workspace server",
+    "prisma:generate": "npm run prisma:generate --workspace web",
+    "prisma:migrate": "npm run prisma:migrate --workspace web"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bihiya/jobcopilot.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
