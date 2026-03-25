@@ -2,7 +2,9 @@ const express = require("express");
 const { processJob } = require("./processJob");
 const {
   beginSiteAuthSession,
-  getSiteAuthStatus,
+  listSiteAuthSessions,
+  disconnectSiteAuthSession,
+  validateSiteAuthSession,
   normalizeSiteFromUrl
 } = require("./siteAuthSession");
 
@@ -67,13 +69,86 @@ app.get("/auth/connect/status", async (req, res) => {
       return res.status(400).json({ error: "site or siteUrl is required" });
     }
 
-    const status = await getSiteAuthStatus({ userId, site });
+    const status = await validateSiteAuthSession({ userId, site, siteUrl: req.query.siteUrl });
     return res.json(status);
   } catch (error) {
     console.error("Failed to fetch connect status:", error);
     return res.status(500).json({
       error: "INTERNAL_SERVER_ERROR",
       message: error.message || "Unexpected error while reading connect status"
+    });
+  }
+});
+
+app.get("/auth/connect/list", async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
+
+    const sessions = await listSiteAuthSessions({ userId });
+    return res.json({ sessions });
+  } catch (error) {
+    console.error("Failed to list connected sites:", error);
+    return res.status(500).json({
+      error: "INTERNAL_SERVER_ERROR",
+      message: error.message || "Unexpected error while listing connected sites"
+    });
+  }
+});
+
+app.post("/auth/connect/validate", async (req, res) => {
+  try {
+    const { userId, site, siteUrl } = req.body || {};
+    const resolvedSite = site || normalizeSiteFromUrl(siteUrl);
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
+
+    if (!resolvedSite) {
+      return res.status(400).json({ error: "site or siteUrl is required" });
+    }
+
+    const result = await validateSiteAuthSession({
+      userId,
+      site: resolvedSite,
+      siteUrl
+    });
+    return res.json(result);
+  } catch (error) {
+    console.error("Failed to validate site auth session:", error);
+    return res.status(500).json({
+      error: "INTERNAL_SERVER_ERROR",
+      message: error.message || "Unexpected error while validating site auth session"
+    });
+  }
+});
+
+app.post("/auth/connect/disconnect", async (req, res) => {
+  try {
+    const { userId, site, siteUrl } = req.body || {};
+    const resolvedSite = site || normalizeSiteFromUrl(siteUrl);
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
+
+    if (!resolvedSite) {
+      return res.status(400).json({ error: "site or siteUrl is required" });
+    }
+
+    const result = await disconnectSiteAuthSession({
+      userId,
+      site: resolvedSite
+    });
+    return res.json(result);
+  } catch (error) {
+    console.error("Failed to disconnect site auth session:", error);
+    return res.status(500).json({
+      error: "INTERNAL_SERVER_ERROR",
+      message: error.message || "Unexpected error while disconnecting site auth session"
     });
   }
 });

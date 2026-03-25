@@ -121,7 +121,7 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       job: blockedJob,
       site,
       requiresAuth: true,
-      connectUrl: `/api/connect/site-auth/start`,
+      connectUrl: `/api/site-auth/start`,
       blocker: {
         type: "auth_required",
         site,

@@ -118,7 +118,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
         });
         dispatch(
           setToast({
-            type: "error",
+            type: "warning",
             message: `Login required on ${payload.site}. Click connect and sign in once.`
           })
         );
@@ -501,7 +501,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       >
         <Alert
           onClose={() => dispatch(clearToast())}
-          severity={toast?.type === "error" ? "error" : "success"}
+          severity={toast?.type === "error" ? "error" : toast?.type === "warning" ? "warning" : "success"}
           variant="filled"
           sx={{ width: "100%" }}
         >

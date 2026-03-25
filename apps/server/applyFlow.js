@@ -1,14 +1,5 @@
 const { chromium } = require("playwright");
-const { getSessionFilePath } = require("./siteAuthSession");
-
-function normalizeSite(url) {
-  try {
-    const parsed = new URL(url);
-    return parsed.hostname.replace(/^www\./, "");
-  } catch {
-    return "unknown";
-  }
-}
+const { getSessionStoragePath, markSessionBlocked } = require("./siteAuthSession");
 
 function detectBlocker(pageContent) {
   const text = (pageContent || "").toLowerCase();
@@ -43,7 +34,17 @@ function isAuthenticatedHeuristic(pageUrl, pageContent) {
 }
 
 async function verifyAuthenticatedSession({ userId, site, jobUrl }) {
-  const sessionFile = getSessionFilePath({ userId, site });
+  const sessionFile = await getSessionStoragePath({ userId, site });
+  if (!sessionFile) {
+    return {
+      isAuthenticated: false,
+      blocker: {
+        blockerType: "auth_required",
+        message: `Login required for ${site}. Connect once and retry.`
+      }
+    };
+  }
+
   const browser = await chromium.launch({ headless: true });
   try {
     const context = await browser.newContext({ storageState: sessionFile });
@@ -52,6 +53,12 @@ async function verifyAuthenticatedSession({ userId, site, jobUrl }) {
     const content = await page.content();
     const blocker = detectBlocker(content);
     if (blocker) {
+      await markSessionBlocked({
+        userId,
+        site,
+        blockerType: blocker.blockerType,
+        blockerMessage: blocker.message
+      });
       return {
         isAuthenticated: false,
         blocker
@@ -63,6 +70,12 @@ async function verifyAuthenticatedSession({ userId, site, jobUrl }) {
       blocker: null
     };
   } catch (error) {
+    await markSessionBlocked({
+      userId,
+      site,
+      blockerType: "site_error",
+      blockerMessage: error.message || "Failed to verify site authentication."
+    });
     return {
       isAuthenticated: false,
       blocker: {
@@ -76,7 +89,6 @@ async function verifyAuthenticatedSession({ userId, site, jobUrl }) {
 }
 
 module.exports = {
-  normalizeSite,
   detectBlocker,
   verifyAuthenticatedSession
 };

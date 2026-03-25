@@ -5,6 +5,7 @@ import { Box, Button, Chip, Stack, Typography } from "@mui/material";
 import SettingsSuggestRoundedIcon from "@mui/icons-material/SettingsSuggestRounded";
 import BadgeRoundedIcon from "@mui/icons-material/BadgeRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
+import ConnectedSitesPanel from "./connected-sites-panel";
 
 export default async function SettingsPage() {
   const session = await auth();
@@ -45,6 +46,8 @@ export default async function SettingsPage() {
             Sign out
           </Button>
         </Stack>
+
+        <ConnectedSitesPanel />
       </Stack>
     </AppShell>
   );
