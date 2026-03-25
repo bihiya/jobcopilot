@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/prisma";
-import { processJobFromDashboard } from "./dashboard/actions";
+import { processJobAction } from "./dashboard/actions";
 
 function badgeColor(status) {
   if (status === "applied") return "#0b6b2d";
@@ -47,7 +47,7 @@ export default async function Page() {
         <p style={{ marginTop: 0, color: "#444" }}>
           Paste a job URL and run profile-aware mapping directly.
         </p>
-        <form action={processJobFromDashboard} style={{ display: "grid", gap: 10 }}>
+        <form action={processJobAction} style={{ display: "grid", gap: 10 }}>
           <input
             name="jobUrl"
             type="url"
