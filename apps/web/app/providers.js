@@ -4,13 +4,17 @@ import { SessionProvider } from "next-auth/react";
 import { ThemeProvider, CssBaseline } from "@mui/material";
 import theme from "@/lib/theme";
 import { Provider as ReduxProvider } from "react-redux";
-import { makeStore } from "@/lib/store";
+import { createStore } from "@/lib/store";
+import { useRef } from "react";
 
 export default function Providers({ children }) {
-  const store = makeStore();
+  const storeRef = useRef(null);
+  if (!storeRef.current) {
+    storeRef.current = createStore();
+  }
 
   return (
-    <ReduxProvider store={store}>
+    <ReduxProvider store={storeRef.current}>
       <SessionProvider>
         <ThemeProvider theme={theme}>
           <CssBaseline />
