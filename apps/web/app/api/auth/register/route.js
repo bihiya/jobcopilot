@@ -1,5 +1,8 @@
 import prisma from "@/lib/prisma";
-import { hash } from "bcryptjs";
+import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
+
+const scrypt = promisify(scryptCallback);
 
 function validateEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -32,7 +35,9 @@ export async function POST(request) {
       return Response.json({ error: "User already exists" }, { status: 409 });
     }
 
-    const passwordHash = await hash(password, 12);
+    const salt = randomBytes(16).toString("hex");
+    const derivedKey = await scrypt(password, salt, 64);
+    const passwordHash = `scrypt:${salt}:${Buffer.from(derivedKey).toString("hex")}`;
     const user = await prisma.user.create({
       data: {
         email,

@@ -3,7 +3,7 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
 import prisma from "./prisma";
 import { getServerSession } from "next-auth";
-import { compare } from "bcryptjs";
+import { verifyPassword } from "./password";
 
 export const authOptions = {
   adapter: PrismaAdapter(prisma),
@@ -34,7 +34,7 @@ export const authOptions = {
           return null;
         }
 
-        const isValidPassword = await compare(password, user.passwordHash);
+        const isValidPassword = await verifyPassword(password, user.passwordHash);
         if (!isValidPassword) {
           return null;
         }
