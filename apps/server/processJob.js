@@ -1,5 +1,7 @@
 const { prisma } = require("./db");
 const { mapFieldWithAI } = require("./mapper");
+const { canAutoApply } = require("./siteAuthSession");
+const { runApplyFlowWithPlaywright } = require("./applyFlow");
 
 function normalizeSite(url) {
   try {
@@ -106,6 +108,32 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     }
   });
 
+  const authState = await canAutoApply({ userId, site });
+  if (!authState.authenticated) {
+    const blockedJob = await prisma.job.update({
+      where: { id: job.id },
+      data: {
+        status: "pending"
+      }
+    });
+
+    return {
+      job: blockedJob,
+      site,
+      requiresAuth: true,
+      connectUrl: `/api/connect/site-auth/start`,
+      blocker: {
+        type: "auth_required",
+        site,
+        message: `Login required for ${site}. Connect this site once to continue.`
+      },
+      filledFields: [],
+      missingFields: [],
+      reusedMappings: 0,
+      newMappingsSaved: 0
+    };
+  }
+
   const existingMappings = await prisma.mapping.findMany({
     where: {
       userId,
@@ -199,9 +227,47 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     }
   });
 
+  const applyResult = await runApplyFlowWithPlaywright({
+    userId,
+    site,
+    jobUrl,
+    filledFields
+  });
+
+  if (applyResult?.blocker) {
+    return {
+      job: updatedJob,
+      site,
+      requiresAuth: false,
+      blocker: applyResult.blocker,
+      filledFields,
+      missingFields,
+      reusedMappings: existingMappings.length,
+      newMappingsSaved: createdMappings.length
+    };
+  }
+
+  if (applyResult?.applied) {
+    const appliedJob = await prisma.job.update({
+      where: { id: updatedJob.id },
+      data: { status: "applied" }
+    });
+
+    return {
+      job: appliedJob,
+      site,
+      requiresAuth: false,
+      filledFields,
+      missingFields,
+      reusedMappings: existingMappings.length,
+      newMappingsSaved: createdMappings.length
+    };
+  }
+
   return {
     job: updatedJob,
     site,
+    requiresAuth: false,
     filledFields,
     missingFields,
     reusedMappings: existingMappings.length,

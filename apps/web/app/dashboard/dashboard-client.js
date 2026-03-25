@@ -25,6 +25,7 @@ import {
 } from "@mui/material";
 import DoneAllIcon from "@mui/icons-material/DoneAll";
 import WorkOutlineIcon from "@mui/icons-material/WorkOutline";
+import LoginIcon from "@mui/icons-material/Login";
 import {
   clearToast,
   initializeDashboard,
@@ -59,6 +60,9 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
     page
   } = useSelector((state) => state.dashboard);
   const [jobUrlInput, setJobUrlInput] = useState("");
+  const [authStatus, setAuthStatus] = useState(null);
+  const [checkingAuth, setCheckingAuth] = useState(false);
+  const [connectingAuth, setConnectingAuth] = useState(false);
 
   useEffect(() => {
     dispatch(
@@ -105,6 +109,32 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
         throw new Error(payload?.message || payload?.error || "Failed to process job.");
       }
 
+      if (payload?.requiresAuth) {
+        setAuthStatus({
+          requiresAuth: true,
+          site: payload.site,
+          loginUrl: payload.loginUrl || null,
+          reason: payload.reason || "Session required"
+        });
+        dispatch(
+          setToast({
+            type: "error",
+            message: `Login required on ${payload.site}. Click connect and sign in once.`
+          })
+        );
+        return;
+      }
+
+      if (payload?.blocker) {
+        dispatch(
+          setToast({
+            type: "error",
+            message: `${payload.blocker.type}: ${payload.blocker.message}`
+          })
+        );
+        return;
+      }
+
       if (payload?.job) {
         dispatch(upsertJob(payload.job));
       }
@@ -119,6 +149,105 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       );
     } finally {
       dispatch(setProcessing(false));
+    }
+  }
+
+  async function onConnectSite() {
+    const jobUrl = String(jobUrlInput || "").trim();
+    if (!jobUrl) {
+      dispatch(setToast({ type: "error", message: "Enter a job URL first." }));
+      return;
+    }
+
+    setConnectingAuth(true);
+    dispatch(clearToast());
+
+    try {
+      const response = await fetch("/api/site-auth/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobUrl })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || payload?.error || "Failed to start auth connection.");
+      }
+
+      dispatch(
+        setToast({
+          type: "success",
+          message:
+            "Login window started. Complete sign-in there, then click Check Login Status."
+        })
+      );
+      setAuthStatus({
+        requiresAuth: true,
+        site: payload.site,
+        loginUrl: payload.loginUrl || null,
+        reason: payload.message || "Waiting for login completion"
+      });
+    } catch (error) {
+      dispatch(
+        setToast({
+          type: "error",
+          message: error?.message || "Could not start login flow."
+        })
+      );
+    } finally {
+      setConnectingAuth(false);
+    }
+  }
+
+  async function onCheckLoginStatus() {
+    const jobUrl = String(jobUrlInput || "").trim();
+    if (!jobUrl) {
+      dispatch(setToast({ type: "error", message: "Enter a job URL first." }));
+      return;
+    }
+
+    setCheckingAuth(true);
+    try {
+      const response = await fetch("/api/site-auth/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobUrl })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || payload?.error || "Failed to check login status.");
+      }
+
+      if (payload?.authenticated) {
+        setAuthStatus(null);
+        dispatch(
+          setToast({
+            type: "success",
+            message: `Authenticated on ${payload.site}. You can process the job now.`
+          })
+        );
+      } else {
+        setAuthStatus({
+          requiresAuth: true,
+          site: payload.site,
+          loginUrl: payload.loginUrl || null,
+          reason: "Still not authenticated"
+        });
+        dispatch(
+          setToast({
+            type: "error",
+            message: `Not authenticated on ${payload.site} yet.`
+          })
+        );
+      }
+    } catch (error) {
+      dispatch(
+        setToast({
+          type: "error",
+          message: error?.message || "Could not verify login status."
+        })
+      );
+    } finally {
+      setCheckingAuth(false);
     }
   }
 
@@ -197,6 +326,28 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
               {processing ? "Processing..." : "Process Job"}
             </Button>
           </Box>
+          {authStatus?.requiresAuth ? (
+            <Alert severity="warning" sx={{ mt: 1 }}>
+              <Stack spacing={1}>
+                <Typography variant="body2">
+                  Login is required on <strong>{authStatus.site}</strong> before apply can continue.
+                </Typography>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                  <Button
+                    variant="outlined"
+                    startIcon={<LoginIcon />}
+                    onClick={onConnectSite}
+                    disabled={connectingAuth}
+                  >
+                    {connectingAuth ? "Starting..." : "Connect/Login Once"}
+                  </Button>
+                  <Button variant="contained" onClick={onCheckLoginStatus} disabled={checkingAuth}>
+                    {checkingAuth ? "Checking..." : "Check Login Status"}
+                  </Button>
+                </Stack>
+              </Stack>
+            </Alert>
+          ) : null}
         </Stack>
       </Paper>
 

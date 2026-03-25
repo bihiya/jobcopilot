@@ -16,6 +16,7 @@ model User {
   profile    UserProfile?
   jobs       Job[]
   mappings   Mapping[]
+  authSessions AuthSession[]
   accounts   Account[]
   sessions   Session[]
 }
@@ -57,6 +58,21 @@ model Mapping {
 
   @@index([userId, site])
   @@unique([userId, site, fieldIdentifier])
+}
+
+model AuthSession {
+  id                String    @id @default(cuid())
+  userId            String
+  site              String
+  storageStatePath  String
+  isAuthenticated   Boolean   @default(false)
+  lastAuthenticatedAt DateTime?
+  lastCheckedAt     DateTime  @default(now())
+  createdAt         DateTime  @default(now())
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, site])
+  @@unique([userId, site])
 }
 
 model Account {
