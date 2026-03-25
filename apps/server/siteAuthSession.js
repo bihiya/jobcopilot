@@ -2,7 +2,6 @@ const path = require("path");
 const fs = require("fs/promises");
 const { chromium } = require("playwright");
 const { prisma } = require("./db");
-const { detectBlocker, isAuthenticatedHeuristic } = require("./applyFlow");
 
 const STORAGE_ROOT = path.resolve(__dirname, "../../data/auth-sessions");
 
@@ -18,6 +17,41 @@ function normalizeSiteFromUrl(siteUrl) {
   } catch {
     return null;
   }
+}
+
+function detectBlocker(pageContent) {
+  const text = (pageContent || "").toLowerCase();
+  if (text.includes("captcha") || text.includes("verify you are human")) {
+    return { blockerType: "captcha", message: "Captcha challenge detected." };
+  }
+  if (
+    text.includes("two-factor") ||
+    text.includes("2fa") ||
+    text.includes("verification code")
+  ) {
+    return { blockerType: "two_factor", message: "Two-factor verification required." };
+  }
+  if (text.includes("sign up") || text.includes("create account")) {
+    return { blockerType: "signup_required", message: "Signup is required on target site." };
+  }
+  if (text.includes("sign in") || text.includes("log in")) {
+    return { blockerType: "login_required", message: "Login required on target site." };
+  }
+  return null;
+}
+
+function isAuthenticatedHeuristic(pageUrl, pageContent) {
+  const url = (pageUrl || "").toLowerCase();
+  const text = (pageContent || "").toLowerCase();
+  if (url.includes("login") || url.includes("signin")) return false;
+  if (
+    text.includes("sign in") ||
+    text.includes("log in") ||
+    text.includes("continue with google")
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function getSessionFilePath({ userId, site }) {
@@ -246,5 +280,7 @@ module.exports = {
   disconnectSiteAuthSession,
   beginSiteAuthSession,
   canAutoApply,
-  markSessionChecked
+  markSessionChecked,
+  detectBlocker,
+  isAuthenticatedHeuristic
 };

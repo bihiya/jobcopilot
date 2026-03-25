@@ -1,5 +1,5 @@
 const { chromium } = require("playwright");
-const { getSessionStoragePath, markSessionBlocked } = require("./siteAuthSession");
+const { getSessionFilePath, markSessionChecked } = require("./siteAuthSession");
 
 function detectBlocker(pageContent) {
   const text = (pageContent || "").toLowerCase();
@@ -34,7 +34,7 @@ function isAuthenticatedHeuristic(pageUrl, pageContent) {
 }
 
 async function verifyAuthenticatedSession({ userId, site, jobUrl }) {
-  const sessionFile = await getSessionStoragePath({ userId, site });
+  const sessionFile = getSessionFilePath({ userId, site });
   if (!sessionFile) {
     return {
       isAuthenticated: false,
@@ -53,29 +53,21 @@ async function verifyAuthenticatedSession({ userId, site, jobUrl }) {
     const content = await page.content();
     const blocker = detectBlocker(content);
     if (blocker) {
-      await markSessionBlocked({
-        userId,
-        site,
-        blockerType: blocker.blockerType,
-        blockerMessage: blocker.message
-      });
+      await markSessionChecked({ userId, site, isAuthenticated: false });
       return {
         isAuthenticated: false,
         blocker
       };
     }
 
+    const isAuthenticated = isAuthenticatedHeuristic(page.url(), content);
+    await markSessionChecked({ userId, site, isAuthenticated });
     return {
-      isAuthenticated: isAuthenticatedHeuristic(page.url(), content),
+      isAuthenticated,
       blocker: null
     };
   } catch (error) {
-    await markSessionBlocked({
-      userId,
-      site,
-      blockerType: "site_error",
-      blockerMessage: error.message || "Failed to verify site authentication."
-    });
+    await markSessionChecked({ userId, site, isAuthenticated: false });
     return {
       isAuthenticated: false,
       blocker: {
