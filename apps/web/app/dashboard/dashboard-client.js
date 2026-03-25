@@ -1,52 +1,37 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Snackbar,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography
+} from "@mui/material";
+import DoneAllIcon from "@mui/icons-material/DoneAll";
+import WorkOutlineIcon from "@mui/icons-material/WorkOutline";
 
 const FILTERS = ["all", "pending", "ready", "applied"];
-const PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [5, 10, 25];
 
-function badgeColor(status) {
-  if (status === "applied") return "#0b6b2d";
-  if (status === "ready") return "#0f4da8";
-  return "#8a6400";
-}
-
-function toastStyle(type) {
-  if (type === "success") {
-    return {
-      background: "#eaf8ef",
-      border: "1px solid #9cd9b0",
-      color: "#0d5c2a"
-    };
-  }
-
-  if (type === "error") {
-    return {
-      background: "#fdecec",
-      border: "1px solid #f2b1b1",
-      color: "#8b1d1d"
-    };
-  }
-
-  return {
-    background: "#f5f5f5",
-    border: "1px solid #ddd",
-    color: "#333"
-  };
-}
-
-function buildPageHref(filter, page) {
-  const params = new URLSearchParams();
-  if (filter && filter !== "all") {
-    params.set("status", filter);
-  }
-
-  if (page > 1) {
-    params.set("page", String(page));
-  }
-
-  const query = params.toString();
-  return query ? `/?${query}` : "/";
+function statusColor(status) {
+  if (status === "applied") return "success";
+  if (status === "ready") return "info";
+  return "warning";
 }
 
 export default function DashboardClient({ initialJobs, initialFilter, initialPage }) {
@@ -54,25 +39,26 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
   const [processing, setProcessing] = useState(false);
   const [markingJobId, setMarkingJobId] = useState(null);
   const [toast, setToast] = useState(null);
-
-  const normalizedFilter = FILTERS.includes(initialFilter) ? initialFilter : "all";
-  const safePage = Math.max(1, Number(initialPage || 1));
+  const [activeFilter, setActiveFilter] = useState(
+    FILTERS.includes(initialFilter) ? initialFilter : "all"
+  );
+  const [pageSize, setPageSize] = useState(10);
+  const [page, setPage] = useState(Math.max(1, Number(initialPage || 1)));
+  const [jobUrlInput, setJobUrlInput] = useState("");
 
   const filteredJobs = useMemo(() => {
-    if (normalizedFilter === "all") return jobs;
-    return jobs.filter((job) => job.status === normalizedFilter);
-  }, [jobs, normalizedFilter]);
+    if (activeFilter === "all") return jobs;
+    return jobs.filter((job) => job.status === activeFilter);
+  }, [jobs, activeFilter]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredJobs.length / PAGE_SIZE));
-  const currentPage = Math.min(safePage, totalPages);
-  const start = (currentPage - 1) * PAGE_SIZE;
-  const paginatedJobs = filteredJobs.slice(start, start + PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(filteredJobs.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const start = (currentPage - 1) * pageSize;
+  const paginatedJobs = filteredJobs.slice(start, start + pageSize);
 
   async function onProcessJob(event) {
     event.preventDefault();
-    const form = event.currentTarget;
-    const formData = new FormData(form);
-    const jobUrl = String(formData.get("jobUrl") || "").trim();
+    const jobUrl = String(jobUrlInput || "").trim();
 
     if (!jobUrl) {
       setToast({ type: "error", message: "Job URL is required." });
@@ -97,7 +83,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       if (payload?.job) {
         setJobs((prev) => [payload.job, ...prev.filter((item) => item.id !== payload.job.id)]);
       }
-      form.reset();
+      setJobUrlInput("");
       setToast({ type: "success", message: "Job processed successfully." });
     } catch (error) {
       setToast({
@@ -140,156 +126,212 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
 
   return (
     <>
-      <section style={{ border: "1px solid #ddd", borderRadius: 10, padding: 16, marginTop: 18 }}>
-        <h2 style={{ marginTop: 0 }}>Process a job URL</h2>
-        <p style={{ marginTop: 0, color: "#444" }}>
-          Paste a job URL and run profile-aware mapping directly.
-        </p>
-        {toast ? (
-          <div
-            role="status"
-            aria-live="polite"
-            style={{
-              ...toastStyle(toast.type),
-              borderRadius: 8,
-              padding: "8px 10px",
-              marginBottom: 10
-            }}
+      <Paper
+        elevation={0}
+        sx={{
+          p: { xs: 2, md: 3 },
+          mt: 2,
+          borderRadius: 3,
+          border: "1px solid",
+          borderColor: "divider",
+          background: "linear-gradient(135deg, #f8fbff 0%, #f5f9ff 40%, #f3fff8 100%)"
+        }}
+      >
+        <Stack spacing={1.5}>
+          <Typography variant="h5" fontWeight={700}>
+            Process a job URL
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Paste a job URL and run profile-aware mapping directly.
+          </Typography>
+          <Box
+            component="form"
+            onSubmit={onProcessJob}
+            sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: "1fr auto" } }}
           >
-            {toast.message}
-          </div>
-        ) : null}
-        <form onSubmit={onProcessJob} style={{ display: "grid", gap: 10 }}>
-          <input
-            name="jobUrl"
-            type="url"
-            required
-            placeholder="https://www.linkedin.com/jobs/view/..."
-            style={{ padding: "0.6rem 0.75rem" }}
-          />
-          <button
-            type="submit"
-            disabled={processing}
-            style={{ width: "fit-content", padding: "0.5rem 0.9rem" }}
-          >
-            {processing ? "Processing..." : "Process Job"}
-          </button>
-        </form>
-      </section>
+            <TextField
+              name="jobUrl"
+              type="url"
+              required
+              label="Job URL"
+              value={jobUrlInput}
+              onChange={(event) => setJobUrlInput(event.target.value)}
+              placeholder="https://www.linkedin.com/jobs/view/..."
+              fullWidth
+            />
+            <Button
+              type="submit"
+              variant="contained"
+              size="large"
+              disabled={processing}
+              startIcon={<WorkOutlineIcon />}
+              sx={{ whiteSpace: "nowrap" }}
+            >
+              {processing ? "Processing..." : "Process Job"}
+            </Button>
+          </Box>
+        </Stack>
+      </Paper>
 
-      <section style={{ border: "1px solid #ddd", borderRadius: 10, padding: 16, marginTop: 18 }}>
-        <h2 style={{ marginTop: 0 }}>Your jobs</h2>
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-          {FILTERS.map((filter) => {
-            const active = normalizedFilter === filter;
-            return (
-              <a
-                key={filter}
-                href={buildPageHref(filter, 1)}
-                style={{
-                  border: "1px solid #ccc",
-                  borderRadius: 999,
-                  padding: "4px 10px",
-                  textDecoration: "none",
-                  backgroundColor: active ? "#111" : "white",
-                  color: active ? "white" : "#222",
-                  textTransform: "capitalize",
-                  fontSize: 13
+      <Paper
+        elevation={0}
+        sx={{
+          p: { xs: 2, md: 3 },
+          mt: 2,
+          borderRadius: 3,
+          border: "1px solid",
+          borderColor: "divider"
+        }}
+      >
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          alignItems={{ xs: "flex-start", md: "center" }}
+          justifyContent="space-between"
+          spacing={2}
+          mb={2}
+        >
+          <Typography variant="h5" fontWeight={700}>
+            Your jobs
+          </Typography>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+            <Typography variant="body2" color="text.secondary">
+              Page size
+            </Typography>
+            <FormControl size="small" sx={{ minWidth: 90 }}>
+              <InputLabel id="page-size-label">Rows</InputLabel>
+              <Select
+                labelId="page-size-label"
+                label="Rows"
+                value={pageSize}
+                onChange={(event) => {
+                  setPageSize(Number(event.target.value));
+                  setPage(1);
                 }}
               >
-                {filter}
-              </a>
+                {PAGE_SIZE_OPTIONS.map((option) => (
+                  <MenuItem key={option} value={option}>
+                    {option}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Stack>
+        </Stack>
+
+        <Stack direction="row" spacing={1} mb={2} flexWrap="wrap">
+          {FILTERS.map((filter) => {
+            const active = activeFilter === filter;
+            return (
+              <Chip
+                key={filter}
+                label={filter}
+                clickable
+                color={active ? "primary" : "default"}
+                variant={active ? "filled" : "outlined"}
+                onClick={() => {
+                  setActiveFilter(filter);
+                  setPage(1);
+                }}
+                sx={{ textTransform: "capitalize" }}
+              />
             );
           })}
-        </div>
+        </Stack>
 
         {paginatedJobs.length === 0 ? (
-          <p>No jobs found for this filter.</p>
+          <Typography color="text.secondary">No jobs found for this filter.</Typography>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr>
-                  <th align="left">URL</th>
-                  <th align="left">Status</th>
-                  <th align="left">Match score</th>
-                  <th align="left">Created</th>
-                  <th align="left">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
+          <TableContainer sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>URL</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Match score</TableCell>
+                  <TableCell>Created</TableCell>
+                  <TableCell>Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
                 {paginatedJobs.map((job) => (
-                  <tr key={job.id} style={{ borderTop: "1px solid #eee" }}>
-                    <td style={{ padding: "8px 0" }}>
-                      <a href={job.url} target="_blank" rel="noreferrer">
+                  <TableRow key={job.id} hover>
+                    <TableCell sx={{ maxWidth: 360 }}>
+                      <a href={job.url} target="_blank" rel="noreferrer" style={{ color: "#1565c0" }}>
                         {job.url}
                       </a>
-                    </td>
-                    <td style={{ padding: "8px 0" }}>
-                      <span
-                        style={{
-                          color: "white",
-                          backgroundColor: badgeColor(job.status),
-                          borderRadius: 999,
-                          padding: "2px 10px",
-                          fontSize: 12,
-                          textTransform: "capitalize"
-                        }}
-                      >
+                    </TableCell>
+                    <TableCell>
+                      <Chip
                         {job.status}
-                      </span>
-                    </td>
-                    <td style={{ padding: "8px 0" }}>{job.matchScore ?? 0}%</td>
-                    <td style={{ padding: "8px 0" }}>
-                      {new Date(job.createdAt).toLocaleString()}
-                    </td>
-                    <td style={{ padding: "8px 0" }}>
+                        size="small"
+                        color={statusColor(job.status)}
+                        sx={{ textTransform: "capitalize", color: "white" }}
+                      />
+                    </TableCell>
+                    <TableCell>{job.matchScore ?? 0}%</TableCell>
+                    <TableCell>{new Date(job.createdAt).toLocaleString()}</TableCell>
+                    <TableCell>
                       {job.status === "applied" ? (
-                        <span style={{ color: "#666", fontSize: 13 }}>Already applied</span>
+                        <Typography variant="body2" color="text.secondary">
+                          Already applied
+                        </Typography>
                       ) : (
-                        <button
-                          type="button"
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          startIcon={<DoneAllIcon />}
                           onClick={() => onMarkApplied(job.id)}
                           disabled={markingJobId === job.id}
-                          style={{ padding: "0.3rem 0.55rem" }}
                         >
                           {markingJobId === job.id ? "Saving..." : "Mark as applied"}
-                        </button>
+                        </Button>
                       )}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
-          </div>
+              </TableBody>
+            </Table>
+          </TableContainer>
         )}
 
-        <div style={{ marginTop: 14, display: "flex", gap: 8, alignItems: "center" }}>
-          <a
-            href={buildPageHref(normalizedFilter, Math.max(1, currentPage - 1))}
-            aria-disabled={currentPage <= 1}
-            style={{
-              opacity: currentPage <= 1 ? 0.4 : 1,
-              pointerEvents: currentPage <= 1 ? "none" : "auto"
-            }}
+        <Stack direction="row" alignItems="center" spacing={1.5} mt={2}>
+          <Button
+            variant="outlined"
+            size="small"
+            disabled={currentPage <= 1}
+            onClick={() => setPage((prev) => Math.max(1, prev - 1))}
           >
             Previous
-          </a>
-          <span>
+          </Button>
+          <Typography variant="body2" color="text.secondary">
             Page {currentPage} of {totalPages}
-          </span>
-          <a
-            href={buildPageHref(normalizedFilter, Math.min(totalPages, currentPage + 1))}
-            aria-disabled={currentPage >= totalPages}
-            style={{
-              opacity: currentPage >= totalPages ? 0.4 : 1,
-              pointerEvents: currentPage >= totalPages ? "none" : "auto"
-            }}
+          </Typography>
+          <Button
+            variant="outlined"
+            size="small"
+            disabled={currentPage >= totalPages}
+            onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
           >
             Next
-          </a>
-        </div>
-      </section>
+          </Button>
+        </Stack>
+      </Paper>
+
+      <Snackbar
+        open={Boolean(toast)}
+        autoHideDuration={3500}
+        onClose={() => setToast(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      >
+        <Alert
+          onClose={() => setToast(null)}
+          severity={toast?.type === "error" ? "error" : "success"}
+          variant="filled"
+          sx={{ width: "100%" }}
+        >
+          {toast?.message || ""}
+        </Alert>
+      </Snackbar>
     </>
   );
 }

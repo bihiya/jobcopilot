@@ -1,7 +1,19 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/prisma";
+import AppShell from "@/app/shared/app-shell";
+import {
+  Alert,
+  Avatar,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  Stack,
+  TextField,
+  Typography
+} from "@mui/material";
 
 async function saveProfile(formData) {
   "use server";
@@ -45,58 +57,85 @@ export default async function ProfilePage() {
   });
 
   return (
-    <main style={{ maxWidth: 900, margin: "0 auto", padding: 32 }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1>Profile</h1>
-        <nav style={{ display: "flex", gap: 12 }}>
-          <Link href="/">Dashboard</Link>
-          <Link href="/settings">Settings</Link>
-          <a href="/api/auth/signout">Sign out</a>
-        </nav>
-      </header>
+    <AppShell active="profile">
+      <Stack direction={{ xs: "column", md: "row" }} spacing={3} alignItems="stretch">
+        <Card
+          sx={{
+            width: { xs: "100%", md: 280 },
+            background: "linear-gradient(145deg, #6d5efc 0%, #43b5ff 100%)",
+            color: "white"
+          }}
+        >
+          <CardContent>
+            <Stack spacing={2} alignItems="center">
+              <Avatar src={session.user.image || undefined} sx={{ width: 84, height: 84 }} />
+              <Typography variant="h6">{session.user.name || "JobCopilot User"}</Typography>
+              <Typography variant="body2" sx={{ opacity: 0.9, textAlign: "center" }}>
+                {session.user.email}
+              </Typography>
+              <Chip
+                label="Profile Autofill Active"
+                sx={{ bgcolor: "rgba(255,255,255,0.2)", color: "white" }}
+              />
+            </Stack>
+          </CardContent>
+        </Card>
 
-      <p>Manage your application autofill profile details and resume URL.</p>
+        <Card sx={{ flex: 1 }}>
+          <CardContent>
+            <Typography variant="h5" fontWeight={700} gutterBottom>
+              Profile Details
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Manage your autofill profile details and resume URL.
+            </Typography>
 
-      <form action={saveProfile} style={{ display: "grid", gap: 12, marginTop: 16 }}>
-        <label>
-          Name
-          <input value={session.user.name || ""} readOnly />
-        </label>
-        <label>
-          Email
-          <input value={session.user.email || ""} readOnly />
-        </label>
-        <label>
-          Phone
-          <input name="phone" defaultValue={profile?.phone || ""} placeholder="+1 555 000 0000" />
-        </label>
-        <label>
-          Experience
-          <textarea
-            name="experience"
-            defaultValue={profile?.experience || ""}
-            placeholder="Summarize years of experience and key achievements"
-            rows={5}
-          />
-        </label>
-        <label>
-          Skills (comma-separated)
-          <input
-            name="skills"
-            defaultValue={Array.isArray(profile?.skills) ? profile.skills.join(", ") : ""}
-            placeholder="JavaScript, Next.js, Prisma"
-          />
-        </label>
-        <label>
-          Resume URL
-          <input
-            name="resumeUrl"
-            defaultValue={profile?.resumeUrl || ""}
-            placeholder="https://example.com/resume.pdf"
-          />
-        </label>
-        <button type="submit">Save profile</button>
-      </form>
-    </main>
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Skills should be comma-separated. Resume URL should be publicly accessible.
+            </Alert>
+
+            <Box
+              component="form"
+              action={saveProfile}
+              sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" } }}
+            >
+              <TextField label="Name" value={session.user.name || ""} InputProps={{ readOnly: true }} />
+              <TextField label="Email" value={session.user.email || ""} InputProps={{ readOnly: true }} />
+              <TextField
+                label="Phone"
+                name="phone"
+                defaultValue={profile?.phone || ""}
+                placeholder="+1 555 000 0000"
+              />
+              <TextField
+                label="Resume URL"
+                name="resumeUrl"
+                defaultValue={profile?.resumeUrl || ""}
+                placeholder="https://example.com/resume.pdf"
+              />
+              <TextField
+                label="Skills (comma-separated)"
+                name="skills"
+                defaultValue={Array.isArray(profile?.skills) ? profile.skills.join(", ") : ""}
+                placeholder="JavaScript, Next.js, Prisma"
+                sx={{ gridColumn: "1 / -1" }}
+              />
+              <TextField
+                label="Experience"
+                name="experience"
+                defaultValue={profile?.experience || ""}
+                placeholder="Summarize years of experience and key achievements"
+                multiline
+                minRows={5}
+                sx={{ gridColumn: "1 / -1" }}
+              />
+              <Button variant="contained" size="large" type="submit" sx={{ width: "fit-content" }}>
+                Save Profile
+              </Button>
+            </Box>
+          </CardContent>
+        </Card>
+      </Stack>
+    </AppShell>
   );
 }
