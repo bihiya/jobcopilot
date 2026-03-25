@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useDispatch, useSelector } from "react-redux";
 import {
   Alert,
   Box,
@@ -24,6 +25,18 @@ import {
 } from "@mui/material";
 import DoneAllIcon from "@mui/icons-material/DoneAll";
 import WorkOutlineIcon from "@mui/icons-material/WorkOutline";
+import {
+  clearToast,
+  initializeDashboard,
+  replaceJob,
+  setFilter,
+  setMarkingJobId,
+  setPage,
+  setPageSize,
+  setProcessing,
+  setToast,
+  upsertJob
+} from "@/lib/store/dashboard-slice";
 
 const FILTERS = ["all", "pending", "ready", "applied"];
 const PAGE_SIZE_OPTIONS = [5, 10, 25];
@@ -35,16 +48,28 @@ function statusColor(status) {
 }
 
 export default function DashboardClient({ initialJobs, initialFilter, initialPage }) {
-  const [jobs, setJobs] = useState(initialJobs);
-  const [processing, setProcessing] = useState(false);
-  const [markingJobId, setMarkingJobId] = useState(null);
-  const [toast, setToast] = useState(null);
-  const [activeFilter, setActiveFilter] = useState(
-    FILTERS.includes(initialFilter) ? initialFilter : "all"
-  );
-  const [pageSize, setPageSize] = useState(10);
-  const [page, setPage] = useState(Math.max(1, Number(initialPage || 1)));
+  const dispatch = useDispatch();
+  const {
+    jobs,
+    processing,
+    markingJobId,
+    toast,
+    filter: activeFilter,
+    pageSize,
+    page
+  } = useSelector((state) => state.dashboard);
   const [jobUrlInput, setJobUrlInput] = useState("");
+
+  useEffect(() => {
+    dispatch(
+      initializeDashboard({
+        jobs: initialJobs,
+        filter: FILTERS.includes(initialFilter) ? initialFilter : "all",
+        page: Math.max(1, Number(initialPage || 1)),
+        pageSize: 10
+      })
+    );
+  }, [dispatch, initialFilter, initialJobs, initialPage]);
 
   const filteredJobs = useMemo(() => {
     if (activeFilter === "all") return jobs;
@@ -61,12 +86,12 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
     const jobUrl = String(jobUrlInput || "").trim();
 
     if (!jobUrl) {
-      setToast({ type: "error", message: "Job URL is required." });
+      dispatch(setToast({ type: "error", message: "Job URL is required." }));
       return;
     }
 
-    setProcessing(true);
-    setToast(null);
+    dispatch(setProcessing(true));
+    dispatch(clearToast());
 
     try {
       const response = await fetch("/api/process", {
@@ -81,23 +106,25 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       }
 
       if (payload?.job) {
-        setJobs((prev) => [payload.job, ...prev.filter((item) => item.id !== payload.job.id)]);
+        dispatch(upsertJob(payload.job));
       }
       setJobUrlInput("");
-      setToast({ type: "success", message: "Job processed successfully." });
+      dispatch(setToast({ type: "success", message: "Job processed successfully." }));
     } catch (error) {
-      setToast({
-        type: "error",
-        message: error?.message || "Unexpected error while processing job."
-      });
+      dispatch(
+        setToast({
+          type: "error",
+          message: error?.message || "Unexpected error while processing job."
+        })
+      );
     } finally {
-      setProcessing(false);
+      dispatch(setProcessing(false));
     }
   }
 
   async function onMarkApplied(jobId) {
-    setMarkingJobId(jobId);
-    setToast(null);
+    dispatch(setMarkingJobId(jobId));
+    dispatch(clearToast());
 
     try {
       const response = await fetch(`/api/jobs/${jobId}/apply`, {
@@ -109,18 +136,18 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       }
 
       if (payload?.job) {
-        setJobs((prev) =>
-          prev.map((job) => (job.id === payload.job.id ? payload.job : job))
-        );
+        dispatch(replaceJob(payload.job));
       }
-      setToast({ type: "success", message: "Job marked as applied." });
+      dispatch(setToast({ type: "success", message: "Job marked as applied." }));
     } catch (error) {
-      setToast({
-        type: "error",
-        message: error?.message || "Unexpected error while updating job."
-      });
+      dispatch(
+        setToast({
+          type: "error",
+          message: error?.message || "Unexpected error while updating job."
+        })
+      );
     } finally {
-      setMarkingJobId(null);
+      dispatch(setMarkingJobId(null));
     }
   }
 
@@ -204,8 +231,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
                 label="Rows"
                 value={pageSize}
                 onChange={(event) => {
-                  setPageSize(Number(event.target.value));
-                  setPage(1);
+                  dispatch(setPageSize(Number(event.target.value)));
                 }}
               >
                 {PAGE_SIZE_OPTIONS.map((option) => (
@@ -229,8 +255,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
                 color={active ? "primary" : "default"}
                 variant={active ? "filled" : "outlined"}
                 onClick={() => {
-                  setActiveFilter(filter);
-                  setPage(1);
+                  dispatch(setFilter(filter));
                 }}
                 sx={{ textTransform: "capitalize" }}
               />
@@ -299,7 +324,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
             variant="outlined"
             size="small"
             disabled={currentPage <= 1}
-            onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+            onClick={() => dispatch(setPage(Math.max(1, currentPage - 1)))}
           >
             Previous
           </Button>
@@ -310,7 +335,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
             variant="outlined"
             size="small"
             disabled={currentPage >= totalPages}
-            onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+            onClick={() => dispatch(setPage(Math.min(totalPages, currentPage + 1)))}
           >
             Next
           </Button>
@@ -320,11 +345,11 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       <Snackbar
         open={Boolean(toast)}
         autoHideDuration={3500}
-        onClose={() => setToast(null)}
+        onClose={() => dispatch(clearToast())}
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
       >
         <Alert
-          onClose={() => setToast(null)}
+          onClose={() => dispatch(clearToast())}
           severity={toast?.type === "error" ? "error" : "success"}
           variant="filled"
           sx={{ width: "100%" }}
