@@ -1,0 +1,27 @@
+{
+  "name": "jobcopilot",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/server"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace web\" \"npm run dev --workspace server\"",
+    "dev:web": "npm run dev --workspace web",
+    "dev:server": "npm run dev --workspace server",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:setup": "docker compose up -d postgres && until docker compose exec -T postgres pg_isready -U postgres -d jobcopilot >/dev/null 2>&1; do echo \"Waiting for PostgreSQL...\"; sleep 1; done && DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/jobcopilot?schema=public} npm run prisma:migrate",
+    "prisma:generate": "npm run prisma:generate --workspace web",
+    "prisma:migrate": "npm run prisma:migrate --workspace web"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bihiya/jobcopilot.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
