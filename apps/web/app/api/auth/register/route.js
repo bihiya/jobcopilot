@@ -1,8 +1,6 @@
 import prisma from "@/lib/prisma";
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
-import { promisify } from "node:util";
-
-const scrypt = promisify(scryptCallback);
+import { hashPassword } from "@/lib/password";
+import { createTokenHash, generateToken } from "@/lib/tokens";
 
 function validateEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -13,6 +11,7 @@ export async function POST(request) {
     const body = await request.json();
     const email = String(body?.email || "").trim().toLowerCase();
     const password = String(body?.password || "");
+    const confirmPassword = String(body?.confirmPassword || "");
     const name = String(body?.name || "").trim() || null;
 
     if (!validateEmail(email)) {
@@ -26,6 +25,10 @@ export async function POST(request) {
       );
     }
 
+    if (password !== confirmPassword) {
+      return Response.json({ error: "Passwords do not match" }, { status: 400 });
+    }
+
     const existing = await prisma.user.findUnique({
       where: { email },
       select: { id: true }
@@ -35,14 +38,19 @@ export async function POST(request) {
       return Response.json({ error: "User already exists" }, { status: 409 });
     }
 
-    const salt = randomBytes(16).toString("hex");
-    const derivedKey = await scrypt(password, salt, 64);
-    const passwordHash = `scrypt:${salt}:${Buffer.from(derivedKey).toString("hex")}`;
+    const passwordHash = await hashPassword(password);
+    const verificationToken = generateToken();
+    const verificationTokenHash = createTokenHash(verificationToken);
+    const verificationTokenExpires = new Date(Date.now() + 1000 * 60 * 60 * 24);
+
     const user = await prisma.user.create({
       data: {
         email,
         name,
-        passwordHash
+        passwordHash,
+        emailVerifiedAt: null,
+        emailVerificationTokenHash: verificationTokenHash,
+        emailVerificationTokenExpires
       },
       select: {
         id: true,
@@ -51,7 +59,14 @@ export async function POST(request) {
       }
     });
 
-    return Response.json({ user }, { status: 201 });
+    return Response.json(
+      {
+        user,
+        requiresEmailVerification: true,
+        verificationToken
+      },
+      { status: 201 }
+    );
   } catch (error) {
     console.error("POST /api/auth/register failed", error);
     return Response.json({ error: "Failed to register user" }, { status: 500 });

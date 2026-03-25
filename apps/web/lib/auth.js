@@ -34,6 +34,10 @@ export const authOptions = {
           return null;
         }
 
+        if (!user.emailVerified) {
+          return null;
+        }
+
         const isValidPassword = await verifyPassword(password, user.passwordHash);
         if (!isValidPassword) {
           return null;

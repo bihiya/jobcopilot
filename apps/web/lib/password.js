@@ -12,11 +12,19 @@ export async function hashPassword(password) {
 }
 
 export async function verifyPassword(password, encodedHash) {
-  if (!encodedHash || !encodedHash.includes(":")) {
+  if (!encodedHash) {
     return false;
   }
 
-  const [salt, hashHex] = encodedHash.split(":");
+  const normalized = encodedHash.startsWith("scrypt:")
+    ? encodedHash.slice("scrypt:".length)
+    : encodedHash;
+
+  if (!normalized.includes(":")) {
+    return false;
+  }
+
+  const [salt, hashHex] = normalized.split(":");
   const derivedKey = await scrypt(password, salt, KEY_LENGTH);
   const storedKey = Buffer.from(hashHex, "hex");
   const computedKey = Buffer.from(derivedKey);
