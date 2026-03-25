@@ -2,7 +2,7 @@
 
 import { SessionProvider } from "next-auth/react";
 import { ThemeProvider, CssBaseline } from "@mui/material";
-import { theme } from "@/lib/theme";
+import theme from "@/lib/theme";
 
 export default function Providers({ children }) {
   return (

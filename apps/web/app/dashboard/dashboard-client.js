@@ -262,7 +262,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
                     </TableCell>
                     <TableCell>
                       <Chip
-                        {job.status}
+                        label={job.status}
                         size="small"
                         color={statusColor(job.status)}
                         sx={{ textTransform: "capitalize", color: "white" }}
