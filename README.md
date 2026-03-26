@@ -117,16 +117,28 @@ Notes:
 The public fetch pipeline now includes:
 
 - **Compliance gate**:
-  - source allowlist (`PUBLIC_FETCH_ALLOWED_SOURCES`)
-  - optional robots policy enforcement (`PUBLIC_FETCH_ENFORCE_ROBOTS`)
-  - official API requirement switch (`PUBLIC_FETCH_REQUIRE_OFFICIAL_API`)
+  - source allowlist (`PUBLIC_JOB_FETCH_ALLOWED_SOURCES`)
+  - official API requirement switch (`REQUIRE_OFFICIAL_API_ONLY`) or request mode `official_api_only`
+  - per-request compliance hints: `compliance.requireOfficialApi`, `compliance.allowScraping`
 - **Anti-bot handling**:
   - blocker detection for captcha/challenge/verification responses
   - retry with exponential backoff and anti-bot circuit breaker
 - **Rotating transport**:
-  - rotating user agents (`PUBLIC_FETCH_USER_AGENTS`)
-  - rotating proxies (`PUBLIC_FETCH_PROXIES`)
-  - per-request timeout control (`PUBLIC_FETCH_TIMEOUT_MS`)
+  - rotating user agents (`PUBLIC_JOB_FETCH_USER_AGENTS`)
+  - rotating proxies (`PUBLIC_JOB_FETCH_PROXIES`)
+  - per-request timeout control (`PUBLIC_JOB_FETCH_TIMEOUT_MS`)
+
+Example request enforcing official API mode:
+
+```bash
+curl -X POST http://localhost:4000/jobs/public-fetch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": "linkedin",
+    "query": "frontend engineer",
+    "mode": "official_api_only"
+  }'
+```
 
 When blocked, responses are structured (non-crashing) with blocker details:
 

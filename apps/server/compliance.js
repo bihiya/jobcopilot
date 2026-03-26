@@ -68,7 +68,7 @@ function isDomainAllowed(source, target) {
   return actual === expected || actual.endsWith(`.${expected}`);
 }
 
-function evaluateCompliance({ source, searchUrl }) {
+function evaluateCompliance({ source, searchUrl, requireOfficialApi = false }) {
   const normalizedSource = normalizeSource(source);
   const sourceConfig = resolveSourceConfig(normalizedSource);
 
@@ -92,9 +92,10 @@ function evaluateCompliance({ source, searchUrl }) {
     };
   }
 
-  const requireOfficialApi = parseBoolean(process.env.REQUIRE_OFFICIAL_API_ONLY, false);
+  const requireOfficialApiOnly =
+    parseBoolean(process.env.REQUIRE_OFFICIAL_API_ONLY, false) || Boolean(requireOfficialApi);
   const officialApiUrl = process.env[sourceConfig.officialApiEnv] || null;
-  if (requireOfficialApi && !officialApiUrl) {
+  if (requireOfficialApiOnly && !officialApiUrl) {
     return {
       allowed: false,
       blocker: {
@@ -123,7 +124,84 @@ function evaluateCompliance({ source, searchUrl }) {
   };
 }
 
+function getOfficialApiStatus(source) {
+  const normalizedSource = normalizeSource(source);
+  const sourceConfig = resolveSourceConfig(normalizedSource);
+  const officialApiUrl = sourceConfig?.officialApiEnv
+    ? process.env[sourceConfig.officialApiEnv] || null
+    : null;
+  return {
+    source: normalizedSource,
+    available: Boolean(officialApiUrl),
+    endpoint: officialApiUrl
+  };
+}
+
+function getComplianceMeta({ source }) {
+  const normalizedSource = normalizeSource(source);
+  return {
+    source: normalizedSource,
+    allowedSources: parseList(process.env.PUBLIC_JOB_FETCH_ALLOWED_SOURCES),
+    requireOfficialApiOnly: parseBoolean(process.env.REQUIRE_OFFICIAL_API_ONLY, false)
+  };
+}
+
+function assertProviderFetchAllowed({
+  source,
+  allowScraping = false,
+  hasOfficialApi = false,
+  requireOfficialApi = false
+}) {
+  const normalizedSource = normalizeSource(source);
+  if (!isAllowedSource(normalizedSource)) {
+    const error = new Error(`Source "${normalizedSource}" is not enabled by policy.`);
+    error.code = "SOURCE_NOT_ALLOWED";
+    error.status = 403;
+    error.details = { source: normalizedSource };
+    throw error;
+  }
+
+  const requireOfficialApiOnly =
+    parseBoolean(process.env.REQUIRE_OFFICIAL_API_ONLY, false) || Boolean(requireOfficialApi);
+  if (requireOfficialApiOnly && !hasOfficialApi) {
+    const config = resolveSourceConfig(normalizedSource);
+    const error = new Error(
+      `Compliance policy requires official API for ${normalizedSource}. ` +
+        `Set ${config?.officialApiEnv || "OFFICIAL_API_URL"} to proceed.`
+    );
+    error.code = "OFFICIAL_API_REQUIRED";
+    error.status = 403;
+    error.details = {
+      source: normalizedSource,
+      officialApiEnv: config?.officialApiEnv || null
+    };
+    throw error;
+  }
+
+  const scrapeAllowedByEnv = parseBoolean(process.env.PUBLIC_JOB_FETCH_ALLOW_SCRAPING, false);
+  if (allowScraping && !scrapeAllowedByEnv && !hasOfficialApi) {
+    const error = new Error(
+      `Scraping mode is disabled by policy for source "${normalizedSource}".`
+    );
+    error.code = "SCRAPING_DISABLED";
+    error.status = 403;
+    error.details = {
+      source: normalizedSource,
+      hint: "Set PUBLIC_JOB_FETCH_ALLOW_SCRAPING=true if policy permits."
+    };
+    throw error;
+  }
+}
+
 module.exports = {
+  parseBoolean,
+  normalizeSource,
   evaluateCompliance,
-  parseBoolean
+  resolveSourceConfig,
+  isAllowedSource,
+  isDomainAllowed,
+  normalizeDomain,
+  assertProviderFetchAllowed,
+  getOfficialApiStatus,
+  getComplianceMeta
 };

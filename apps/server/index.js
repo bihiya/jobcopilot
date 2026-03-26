@@ -37,8 +37,10 @@ app.post("/jobs/public-fetch", async (req, res) => {
       title,
       description,
       location,
+      searchUrl,
       limit,
-      mode
+      mode,
+      compliance
     } = req.body || {};
     const result = await fetchAndStorePublicJobs({
       source,
@@ -47,7 +49,9 @@ app.post("/jobs/public-fetch", async (req, res) => {
       description,
       location,
       limit,
-      mode
+      mode,
+      compliance,
+      searchUrl
     });
     return res.json(result);
   } catch (error) {

@@ -134,14 +134,18 @@ async function fetchLinkedInJobs({
   titleQuery,
   descriptionQuery,
   limit = 10,
-  transportConfig
+  transportConfig,
+  searchUrl
 }) {
-  const searchUrl = pickSearchUrl(query);
+  const resolvedSearchUrl =
+    typeof searchUrl === "string" && searchUrl.trim().length > 0
+      ? searchUrl.trim()
+      : pickSearchUrl(query);
   const client = createRotatingHttpClient(transportConfig);
 
   let html = "";
   try {
-    const response = await client.get(searchUrl);
+    const response = await client.get(resolvedSearchUrl);
     html = response.body || "";
   } catch (error) {
     const blocker = classifyLinkedInBlocker(error);
@@ -155,18 +159,18 @@ async function fetchLinkedInJobs({
     };
   }
 
-  let candidates = parseLinkedInCandidatesFromHtml(html, searchUrl);
+  let candidates = parseLinkedInCandidatesFromHtml(html, resolvedSearchUrl);
   if (candidates.length === 0) {
     // Deterministic fallback record so pipeline stays stable in non-networked envs.
     candidates = [
       {
         source: "linkedin",
-        externalId: `li-${Buffer.from(`${searchUrl}-fallback`).toString("base64").slice(0, 24)}`,
-        jobUrl: searchUrl,
-        title: inferTitleFromUrl(searchUrl),
+        externalId: `li-${Buffer.from(`${resolvedSearchUrl}-fallback`).toString("base64").slice(0, 24)}`,
+        jobUrl: resolvedSearchUrl,
+        title: inferTitleFromUrl(resolvedSearchUrl),
         company: "LinkedIn Candidate Co",
         location: "Remote",
-        description: inferDescriptionFromUrl(searchUrl),
+        description: inferDescriptionFromUrl(resolvedSearchUrl),
         postedAt: new Date()
       }
     ];

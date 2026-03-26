@@ -3,7 +3,8 @@ const { fetchLinkedInJobs } = require("./jobSources/linkedin");
 const {
   assertProviderFetchAllowed,
   getOfficialApiStatus,
-  getComplianceMeta
+  getComplianceMeta,
+  evaluateCompliance
 } = require("./compliance");
 
 function normalizeSource(source) {
@@ -69,15 +70,41 @@ async function fetchAndStorePublicJobs({
   title,
   description,
   limit = 10,
-  allowScraping = false
+  location,
+  mode = "default",
+  compliance = {},
+  searchUrl
 }) {
   const normalizedSource = normalizeSource(source);
   const complianceMeta = getComplianceMeta({ source: normalizedSource });
   const officialApi = getOfficialApiStatus(normalizedSource);
+  const requireOfficialApi =
+    compliance.requireOfficialApi === true || mode === "official_api_only";
+  const allowScraping = compliance.allowScraping ?? mode === "scrape";
+  const complianceCheck = evaluateCompliance({
+    source: normalizedSource,
+    searchUrl,
+    requireOfficialApi
+  });
+
+  if (!complianceCheck.allowed) {
+    return {
+      source: normalizedSource,
+      fetchedCount: 0,
+      savedCount: 0,
+      jobs: [],
+      blocker: complianceCheck.blocker,
+      providerMeta: null,
+      compliance: complianceMeta,
+      officialApi
+    };
+  }
+
   assertProviderFetchAllowed({
     source: normalizedSource,
     allowScraping,
-    hasOfficialApi: officialApi.available
+    hasOfficialApi: officialApi.available,
+    requireOfficialApi
   });
 
   const provider = providerFor(normalizedSource);
@@ -85,12 +112,30 @@ async function fetchAndStorePublicJobs({
     throw new Error(`Unsupported source "${normalizedSource}".`);
   }
 
-  const jobs = await provider({
+  const providerResult = await provider({
     query,
     titleQuery: title,
     descriptionQuery: description,
-    limit
+    locationQuery: location,
+    limit,
+    mode,
+    searchUrl
   });
+  const jobs = Array.isArray(providerResult?.jobs) ? providerResult.jobs : [];
+  const providerMeta = providerResult?.providerMeta || null;
+
+  if (providerMeta?.blocker) {
+    return {
+      source: normalizedSource,
+      fetchedCount: 0,
+      savedCount: 0,
+      jobs: [],
+      blocker: providerMeta.blocker,
+      providerMeta,
+      compliance: complianceMeta,
+      officialApi
+    };
+  }
   const stored = [];
 
   for (const job of jobs) {
