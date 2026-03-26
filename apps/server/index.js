@@ -31,11 +31,34 @@ app.post("/process", async (req, res) => {
 
 app.post("/jobs/public-fetch", async (req, res) => {
   try {
-    const { source, query, limit } = req.body || {};
-    const result = await fetchAndStorePublicJobs({ source, query, limit });
+    const {
+      source,
+      query,
+      title,
+      description,
+      location,
+      limit,
+      mode
+    } = req.body || {};
+    const result = await fetchAndStorePublicJobs({
+      source,
+      query,
+      title,
+      description,
+      location,
+      limit,
+      mode
+    });
     return res.json(result);
   } catch (error) {
     console.error("Failed to fetch public jobs:", error);
+    if (error?.status && error?.code) {
+      return res.status(error.status).json({
+        error: error.code,
+        message: error.message,
+        details: error.details || null
+      });
+    }
     return res.status(500).json({
       error: "INTERNAL_SERVER_ERROR",
       message: error.message || "Unexpected error while fetching public jobs"

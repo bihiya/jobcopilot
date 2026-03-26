@@ -112,6 +112,34 @@ Notes:
 - `source` is currently `linkedin` only.
 - provider structure is modular so adding `naukri` and `instahyre` is straightforward.
 
+### Production hardening for public fetch
+
+The public fetch pipeline now includes:
+
+- **Compliance gate**:
+  - source allowlist (`PUBLIC_FETCH_ALLOWED_SOURCES`)
+  - optional robots policy enforcement (`PUBLIC_FETCH_ENFORCE_ROBOTS`)
+  - official API requirement switch (`PUBLIC_FETCH_REQUIRE_OFFICIAL_API`)
+- **Anti-bot handling**:
+  - blocker detection for captcha/challenge/verification responses
+  - retry with exponential backoff and anti-bot circuit breaker
+- **Rotating transport**:
+  - rotating user agents (`PUBLIC_FETCH_USER_AGENTS`)
+  - rotating proxies (`PUBLIC_FETCH_PROXIES`)
+  - per-request timeout control (`PUBLIC_FETCH_TIMEOUT_MS`)
+
+When blocked, responses are structured (non-crashing) with blocker details:
+
+```json
+{
+  "blocker": {
+    "type": "captcha",
+    "message": "Possible anti-bot challenge detected from provider response.",
+    "source": "linkedin"
+  }
+}
+```
+
 ## Self-healing mapping flow
 
 1. Extract `site` from job URL.

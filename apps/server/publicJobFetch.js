@@ -1,5 +1,10 @@
 const { prisma } = require("./db");
 const { fetchLinkedInJobs } = require("./jobSources/linkedin");
+const {
+  assertProviderFetchAllowed,
+  getOfficialApiStatus,
+  getComplianceMeta
+} = require("./compliance");
 
 function normalizeSource(source) {
   return String(source || "linkedin").trim().toLowerCase();
@@ -63,15 +68,29 @@ async function fetchAndStorePublicJobs({
   query,
   title,
   description,
-  limit = 10
+  limit = 10,
+  allowScraping = false
 }) {
   const normalizedSource = normalizeSource(source);
+  const complianceMeta = getComplianceMeta({ source: normalizedSource });
+  const officialApi = getOfficialApiStatus(normalizedSource);
+  assertProviderFetchAllowed({
+    source: normalizedSource,
+    allowScraping,
+    hasOfficialApi: officialApi.available
+  });
+
   const provider = providerFor(normalizedSource);
   if (!provider) {
     throw new Error(`Unsupported source "${normalizedSource}".`);
   }
 
-  const jobs = await provider({ query, limit });
+  const jobs = await provider({
+    query,
+    titleQuery: title,
+    descriptionQuery: description,
+    limit
+  });
   const stored = [];
 
   for (const job of jobs) {
@@ -101,7 +120,9 @@ async function fetchAndStorePublicJobs({
     source: normalizedSource,
     fetchedCount: jobs.length,
     savedCount: stored.length,
-    jobs: stored
+    jobs: stored,
+    compliance: complianceMeta,
+    officialApi
   };
 }
 
