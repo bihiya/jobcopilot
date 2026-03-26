@@ -17,6 +17,7 @@ model User {
   createdAt  DateTime    @default(now())
   profile    UserProfile?
   jobs       Job[]
+  fetchedJobs ExternalJob[]
   mappings   Mapping[]
   authSessions AuthSession[]
   emailVerificationTokens EmailVerificationToken[]
@@ -49,6 +50,29 @@ model Job {
   matchScore Float?
   createdAt  DateTime  @default(now())
   user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ExternalJob {
+  id               String   @id @default(cuid())
+  source           String
+  sourceJobId      String?
+  url              String
+  title            String
+  company          String?
+  location         String?
+  description      String?
+  titleMatched     Boolean  @default(false)
+  descriptionMatch Boolean  @default(false)
+  score            Float    @default(0)
+  query            String?
+  userId           String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([source, query])
+  @@index([titleMatched, descriptionMatch])
+  @@unique([source, sourceJobId])
 }
 
 model Mapping {
