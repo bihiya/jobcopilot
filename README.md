@@ -70,14 +70,47 @@ npm run db:down  # stop postgres
 ### Web (`apps/web`)
 
 - `GET/POST /api/auth/[...nextauth]` - NextAuth (Google provider + Prisma adapter)
+- `POST /api/auth/register` - Email/password registration + verification token
+- `POST /api/auth/verify-email` - Verify email token
+- `POST /api/auth/forgot-password` - Create password reset token
+- `POST /api/auth/reset-password` - Reset password using token
 - `GET /api/profile` - Get authenticated user profile
 - `POST /api/profile` - Save authenticated user profile
 - `POST /api/process` - Forwards processing request to backend with `userId` from session
+- `POST /api/public/jobs/fetch` - Public (no-login) job fetch/match/save for supported sources
 
 ### Server (`apps/server`)
 
 - `GET /health` - Health check
 - `POST /process` - Process job fields with mapping reuse and AI fallback
+- `POST /public/jobs/fetch` - Provider-based public fetch pipeline (`linkedin` now)
+
+## Public no-login job fetch route
+
+Use this to fetch jobs without authentication (LinkedIn first; extensible for Naukri/Instahyre):
+
+```bash
+curl -X POST http://localhost:3000/api/public/jobs/fetch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": "linkedin",
+    "query": "software engineer",
+    "location": "remote",
+    "expectedTitle": "Senior Software Engineer",
+    "expectedDescription": "Node.js, Next.js, Prisma",
+    "limit": 10
+  }'
+```
+
+Response includes:
+- fetched jobs
+- title/description similarity match scores
+- saved count
+- `bestMatch` record
+
+Notes:
+- `source` is currently `linkedin` only.
+- provider structure is modular so adding `naukri` and `instahyre` is straightforward.
 
 ## Self-healing mapping flow
 

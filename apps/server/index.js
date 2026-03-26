@@ -7,6 +7,7 @@ const {
   validateSiteAuthSession,
   normalizeSiteFromUrl
 } = require("./siteAuthSession");
+const { fetchAndStorePublicJobs } = require("./publicJobFetch");
 
 const app = express();
 app.use(express.json());
@@ -24,6 +25,20 @@ app.post("/process", async (req, res) => {
     res.status(500).json({
       error: "INTERNAL_SERVER_ERROR",
       message: error.message || "Unexpected error while processing job"
+    });
+  }
+});
+
+app.post("/jobs/public-fetch", async (req, res) => {
+  try {
+    const { source, query, limit } = req.body || {};
+    const result = await fetchAndStorePublicJobs({ source, query, limit });
+    return res.json(result);
+  } catch (error) {
+    console.error("Failed to fetch public jobs:", error);
+    return res.status(500).json({
+      error: "INTERNAL_SERVER_ERROR",
+      message: error.message || "Unexpected error while fetching public jobs"
     });
   }
 });
