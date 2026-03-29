@@ -223,6 +223,29 @@ async function canAutoApply({ userId, site }) {
   };
 }
 
+/** Used by Express `/auth/connect/status` and `/auth/connect/validate`. */
+async function validateSiteAuthSession({ userId, site, siteUrl }) {
+  const resolvedSite =
+    site || (siteUrl ? normalizeSiteFromUrl(siteUrl) : null);
+  if (!resolvedSite) {
+    return {
+      site: null,
+      connected: false,
+      authenticated: false,
+      requiresAuth: true,
+      status: "disconnected",
+      error: "site or siteUrl is required"
+    };
+  }
+  const status = await getSiteAuthStatus({ userId, site: resolvedSite });
+  return {
+    ...status,
+    site: resolvedSite,
+    authenticated: status.connected,
+    status: status.connected ? "connected" : "disconnected"
+  };
+}
+
 async function beginSiteAuthSession({ userId, site, siteUrl }) {
   const storageStatePath = getSessionFilePath({ userId, site });
   await ensureStorageDirectory(storageStatePath);
@@ -280,6 +303,7 @@ module.exports = {
   disconnectSiteAuthSession,
   beginSiteAuthSession,
   canAutoApply,
+  validateSiteAuthSession,
   markSessionChecked,
   detectBlocker,
   isAuthenticatedHeuristic

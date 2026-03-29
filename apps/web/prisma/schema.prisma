@@ -3,37 +3,37 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mongodb"
   url      = env("DATABASE_URL")
 }
 
 model User {
-  id         String      @id @default(cuid())
-  email      String      @unique
-  passwordHash String?
-  emailVerified DateTime?
-  name       String?
-  image      String?
-  createdAt  DateTime    @default(now())
-  profile    UserProfile?
-  jobs       Job[]
-  fetchedJobs ExternalJob[]
-  mappings   Mapping[]
-  authSessions AuthSession[]
+  id                      String                   @id @default(auto()) @map("_id") @db.ObjectId
+  email                   String                   @unique
+  passwordHash            String?
+  emailVerified           DateTime?
+  name                    String?
+  image                   String?
+  createdAt               DateTime                 @default(now())
+  profile                 UserProfile?
+  jobs                    Job[]
+  fetchedJobs             ExternalJob[]
+  mappings                Mapping[]
+  authSessions            AuthSession[]
   emailVerificationTokens EmailVerificationToken[]
-  passwordResetTokens PasswordResetToken[]
-  accounts   Account[]
-  sessions   Session[]
+  passwordResetTokens     PasswordResetToken[]
+  accounts                Account[]
+  sessions                Session[]
 }
 
 model UserProfile {
-  id         String   @id @default(cuid())
-  userId     String   @unique
+  id         String  @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String  @unique @db.ObjectId
   phone      String?
   experience String?
   skills     Json?
   resumeUrl  String?
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 enum JobStatus {
@@ -43,17 +43,32 @@ enum JobStatus {
 }
 
 model Job {
-  id         String    @id @default(cuid())
-  userId     String
+  id         String             @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String             @db.ObjectId
   url        String
-  status     JobStatus @default(pending)
+  status     JobStatus          @default(pending)
   matchScore Float?
-  createdAt  DateTime  @default(now())
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt  DateTime           @default(now())
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  auditLogs  JobApplyAuditLog[]
+}
+
+model JobApplyAuditLog {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  jobId     String   @db.ObjectId
+  userId    String   @db.ObjectId
+  step      String
+  message   String
+  meta      Json?
+  createdAt DateTime @default(now())
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([userId, jobId])
 }
 
 model ExternalJob {
-  id               String   @id @default(cuid())
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
   source           String
   sourceJobId      String?
   url              String
@@ -65,7 +80,7 @@ model ExternalJob {
   descriptionMatch Boolean  @default(false)
   score            Float    @default(0)
   query            String?
-  userId           String?
+  userId           String?  @db.ObjectId
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   user             User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -76,8 +91,8 @@ model ExternalJob {
 }
 
 model Mapping {
-  id              String @id @default(cuid())
-  userId          String
+  id              String @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String @db.ObjectId
   site            String
   fieldIdentifier String
   mappedTo        String
@@ -89,47 +104,46 @@ model Mapping {
 }
 
 model AuthSession {
-  id                String    @id @default(cuid())
-  userId            String
-  site              String
-  storageStatePath  String
-  isAuthenticated   Boolean   @default(false)
+  id                  String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId              String    @db.ObjectId
+  site                String
+  storageStatePath    String
+  isAuthenticated     Boolean   @default(false)
   lastAuthenticatedAt DateTime?
-  lastCheckedAt     DateTime  @default(now())
-  createdAt         DateTime  @default(now())
-  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastCheckedAt       DateTime  @default(now())
+  createdAt           DateTime  @default(now())
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId, site])
   @@unique([userId, site])
 }
 
 model EmailVerificationToken {
-  id        String   @id @default(cuid())
-  userId    String
-  token     String   @unique
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String    @db.ObjectId
+  token     String    @unique
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
 }
 
 model PasswordResetToken {
-  id        String   @id @default(cuid())
-  userId    String
-  token     String   @unique
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String    @db.ObjectId
+  token     String    @unique
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
 }
 
 model Account {
-  id                String  @id @default(cuid())
-  userId            String
+  id                String  @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String  @db.ObjectId
   type              String
   provider          String
   providerAccountId String
@@ -146,14 +160,16 @@ model Account {
 }
 
 model Session {
-  id           String   @id @default(cuid())
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
   sessionToken String   @unique
-  userId       String
+  userId       String   @db.ObjectId
   expires      DateTime
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+/// NextAuth email provider tokens; `id` is required for MongoDB collections.
 model VerificationToken {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
   identifier String
   token      String   @unique
   expires    DateTime

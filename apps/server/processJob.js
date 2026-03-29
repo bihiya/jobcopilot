@@ -1,4 +1,5 @@
 const { prisma } = require("./db");
+const { appendJobAudit } = require("./jobAudit");
 const { mapFieldWithAI } = require("./mapper");
 const { canAutoApply } = require("./siteAuthSession");
 const { runApplyFlowWithPlaywright } = require("./applyFlow");
@@ -84,20 +85,32 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
 
   const site = normalizeSite(jobUrl);
 
-  const profile = await prisma.userProfile.findUnique({
-    where: { userId },
-    include: {
-      user: {
-        select: {
-          email: true,
-          name: true
-        }
+  const profileInclude = {
+    user: {
+      select: {
+        email: true,
+        name: true
       }
     }
+  };
+
+  let profile = await prisma.userProfile.findUnique({
+    where: { userId },
+    include: profileInclude
   });
 
   if (!profile) {
-    throw new Error("User profile not found for this user");
+    await prisma.userProfile.create({
+      data: { userId }
+    });
+    profile = await prisma.userProfile.findUnique({
+      where: { userId },
+      include: profileInclude
+    });
+  }
+
+  if (!profile) {
+    throw new Error("Failed to load user profile");
   }
 
   const job = await prisma.job.create({
@@ -108,7 +121,40 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     }
   });
 
+  const processingSteps = [];
+
+  async function audit(step, message, meta) {
+    try {
+      const row = await appendJobAudit(prisma, { jobId: job.id, userId, step, message, meta });
+      processingSteps.push(row);
+    } catch (err) {
+      console.error("Job audit log failed:", err);
+      processingSteps.push({
+        step,
+        message,
+        meta: meta ?? null,
+        at: new Date().toISOString()
+      });
+    }
+  }
+
+  await audit("job_created", `Job saved (${site})`, { site, url: jobUrl });
+  await audit(
+    "profile_ready",
+    "Profile loaded for mapping",
+    {
+      hasPhone: Boolean(profile.phone),
+      hasExperience: Boolean(profile.experience),
+      hasResume: Boolean(profile.resumeUrl)
+    }
+  );
+
   const authState = await canAutoApply({ userId, site });
+  await audit("auth_check", authState.authenticated ? "Site session authenticated" : "Site session missing or expired", {
+    site,
+    authenticated: authState.authenticated
+  });
+
   if (!authState.authenticated) {
     const blockedJob = await prisma.job.update({
       where: { id: job.id },
@@ -130,7 +176,8 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       filledFields: [],
       missingFields: [],
       reusedMappings: 0,
-      newMappingsSaved: 0
+      newMappingsSaved: 0,
+      processingSteps
     };
   }
 
@@ -139,6 +186,10 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       userId,
       site
     }
+  });
+
+  await audit("mappings_loaded", `Loaded ${existingMappings.length} saved field mapping(s) for ${site}`, {
+    count: existingMappings.length
   });
 
   const mappingByField = new Map(
@@ -227,6 +278,18 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     }
   });
 
+  await audit("fields_mapped", "Field mapping pass complete", {
+    filled: filledFields.length,
+    missing: missingFields.length,
+    newMappings: createdMappings.length,
+    jobStatus: status,
+    matchScore
+  });
+
+  await audit("apply_flow_start", "Opening job page to verify session / apply", {
+    filledFieldCount: filledFields.length
+  });
+
   const applyResult = await runApplyFlowWithPlaywright({
     userId,
     site,
@@ -235,6 +298,9 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
   });
 
   if (applyResult?.blocker) {
+    await audit("apply_blocked", applyResult.blocker.message || "Apply flow blocked", {
+      type: applyResult.blocker.type
+    });
     return {
       job: updatedJob,
       site,
@@ -243,7 +309,8 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       filledFields,
       missingFields,
       reusedMappings: existingMappings.length,
-      newMappingsSaved: createdMappings.length
+      newMappingsSaved: createdMappings.length,
+      processingSteps
     };
   }
 
@@ -253,6 +320,7 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       data: { status: "applied" }
     });
 
+    await audit("applied", "Marked as applied after automated flow", {});
     return {
       job: appliedJob,
       site,
@@ -260,9 +328,16 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       filledFields,
       missingFields,
       reusedMappings: existingMappings.length,
-      newMappingsSaved: createdMappings.length
+      newMappingsSaved: createdMappings.length,
+      processingSteps
     };
   }
+
+  await audit(
+    "apply_flow_complete",
+    applyResult?.note || "Apply flow finished (no auto-submit)",
+    {}
+  );
 
   return {
     job: updatedJob,
@@ -271,7 +346,8 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     filledFields,
     missingFields,
     reusedMappings: existingMappings.length,
-    newMappingsSaved: createdMappings.length
+    newMappingsSaved: createdMappings.length,
+    processingSteps
   };
 }
 

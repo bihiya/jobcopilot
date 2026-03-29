@@ -21,6 +21,8 @@ SERVER_URL="http://localhost:4000"
 
 ## 2) Install dependencies
 
+Use **Node.js 24** (see `.nvmrc`; with nvm: `nvm install && nvm use`).
+
 ```bash
 npm install
 ```

@@ -1,4 +1,5 @@
 import prisma from "@/lib/prisma";
+import { createTokenHash } from "@/lib/tokens";
 
 export async function POST(request) {
   try {
@@ -9,8 +10,9 @@ export async function POST(request) {
       return Response.json({ error: "Verification token is required" }, { status: 400 });
     }
 
+    const tokenHash = createTokenHash(token);
     const verification = await prisma.emailVerificationToken.findUnique({
-      where: { token }
+      where: { token: tokenHash }
     });
 
     if (!verification) {
@@ -18,16 +20,16 @@ export async function POST(request) {
     }
 
     if (verification.expiresAt < new Date()) {
-      await prisma.emailVerificationToken.delete({ where: { token } });
+      await prisma.emailVerificationToken.delete({ where: { token: tokenHash } });
       return Response.json({ error: "Verification token has expired" }, { status: 400 });
     }
 
     await prisma.user.update({
       where: { id: verification.userId },
-      data: { emailVerifiedAt: new Date() }
+      data: { emailVerified: new Date() }
     });
 
-    await prisma.emailVerificationToken.delete({ where: { token } });
+    await prisma.emailVerificationToken.delete({ where: { token: tokenHash } });
 
     return Response.json({ success: true }, { status: 200 });
   } catch (error) {

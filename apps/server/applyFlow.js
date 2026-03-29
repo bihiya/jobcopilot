@@ -80,8 +80,39 @@ async function verifyAuthenticatedSession({ userId, site, jobUrl }) {
   }
 }
 
+/**
+ * Full auto-apply (form fill + submit) is not implemented yet; verify session on the job page first.
+ */
+async function runApplyFlowWithPlaywright({ userId, site, jobUrl, filledFields: _filledFields }) {
+  const verification = await verifyAuthenticatedSession({ userId, site, jobUrl });
+  if (verification.blocker) {
+    return {
+      applied: false,
+      blocker: {
+        type: verification.blocker.blockerType || "unknown",
+        message: verification.blocker.message
+      }
+    };
+  }
+  if (!verification.isAuthenticated) {
+    return {
+      applied: false,
+      blocker: {
+        type: "login_required",
+        message: "Still appears logged out on the job page."
+      }
+    };
+  }
+  return {
+    applied: false,
+    blocker: null,
+    note: "Session verified; automated submit not implemented."
+  };
+}
+
 module.exports = {
   detectBlocker,
-  verifyAuthenticatedSession
+  verifyAuthenticatedSession,
+  runApplyFlowWithPlaywright
 };
 

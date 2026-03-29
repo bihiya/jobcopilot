@@ -2,10 +2,14 @@
   "name": "server",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "main": "index.js",
   "scripts": {
     "dev": "node --watch index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "playwright:install": "playwright install chromium"
   },
   "dependencies": {
     "@prisma/client": "^6.4.1",

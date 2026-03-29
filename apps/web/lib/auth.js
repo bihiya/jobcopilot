@@ -7,6 +7,9 @@ import { verifyPassword } from "./password";
 
 export const authOptions = {
   adapter: PrismaAdapter(prisma),
+  // Credentials sign-in does not work reliably with `strategy: "database"` in NextAuth v4;
+  // JWT sessions fix "signed in but homepage still shows logged out".
+  secret: process.env.NEXTAUTH_SECRET,
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_ID || "",
@@ -34,10 +37,6 @@ export const authOptions = {
           return null;
         }
 
-        if (!user.emailVerified) {
-          return null;
-        }
-
         const isValidPassword = await verifyPassword(password, user.passwordHash);
         if (!isValidPassword) {
           return null;
@@ -53,16 +52,29 @@ export const authOptions = {
     })
   ],
   session: {
-    strategy: "database",
+    strategy: "jwt",
+    maxAge: 30 * 24 * 60 * 60
   },
   callbacks: {
-    async session({ session, user }) {
-      if (session?.user) {
-        session.user.id = user.id;
+    async jwt({ token, user }) {
+      if (user) {
+        token.id = user.id;
+        token.email = user.email;
+        token.name = user.name;
+        token.picture = user.image;
+      }
+      return token;
+    },
+    async session({ session, token }) {
+      if (session.user) {
+        session.user.id = token.id ?? token.sub;
+        if (token.email) session.user.email = token.email;
+        if (token.name) session.user.name = token.name;
+        if (token.picture) session.user.image = token.picture;
       }
       return session;
-    },
-  },
+    }
+  }
 };
 
 export function auth() {

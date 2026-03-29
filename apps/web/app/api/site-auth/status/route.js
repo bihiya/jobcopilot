@@ -51,7 +51,7 @@ export async function POST(request) {
     const query = toQuery({
       userId: session.user.id,
       site: body?.site,
-      siteUrl: body?.siteUrl
+      siteUrl: body?.siteUrl ?? body?.jobUrl
     });
     const response = await fetch(`${SERVER_URL}/auth/connect/status?${query}`);
     const payload = await response.json().catch(() => ({}));

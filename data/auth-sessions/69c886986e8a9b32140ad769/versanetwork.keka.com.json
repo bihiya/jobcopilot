@@ -1,0 +1,15 @@
+{
+  "cookies": [
+    {
+      "name": ".AspNetCore.Session",
+      "value": "CfDJ8P%2BCyWkivQBMkzB5lbkWHlXqMbeLLtXaM%2BnWhAVx9FmpEMzL5j7Lw24FhE0Ag4CxKi0T9y9xi8%2BAd0A1GREC8WjAPJlQRxuoagusywwBPuz%2BbpWVZWgWa1nmyjRYD7HyOEJP4iDr2a2qUJ1fmxdaVu920n9eCJEZHLnWWlC4vmDE",
+      "domain": "versanetwork.keka.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": []
+}

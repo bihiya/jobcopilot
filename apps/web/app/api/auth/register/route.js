@@ -1,6 +1,9 @@
 import prisma from "@/lib/prisma";
+import {
+  databaseUnavailableMessage,
+  isDatabaseUnreachableError
+} from "@/lib/db-connection-error";
 import { hashPassword } from "@/lib/password";
-import { createTokenHash, generateToken } from "@/lib/tokens";
 
 function validateEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -39,18 +42,13 @@ export async function POST(request) {
     }
 
     const passwordHash = await hashPassword(password);
-    const verificationToken = generateToken();
-    const verificationTokenHash = createTokenHash(verificationToken);
-    const verificationTokenExpires = new Date(Date.now() + 1000 * 60 * 60 * 24);
 
     const user = await prisma.user.create({
       data: {
         email,
         name,
         passwordHash,
-        emailVerifiedAt: null,
-        emailVerificationTokenHash: verificationTokenHash,
-        emailVerificationTokenExpires
+        emailVerified: new Date()
       },
       select: {
         id: true,
@@ -59,16 +57,12 @@ export async function POST(request) {
       }
     });
 
-    return Response.json(
-      {
-        user,
-        requiresEmailVerification: true,
-        verificationToken
-      },
-      { status: 201 }
-    );
+    return Response.json({ user }, { status: 201 });
   } catch (error) {
     console.error("POST /api/auth/register failed", error);
+    if (isDatabaseUnreachableError(error)) {
+      return Response.json({ error: databaseUnavailableMessage() }, { status: 503 });
+    }
     return Response.json({ error: "Failed to register user" }, { status: 500 });
   }
 }

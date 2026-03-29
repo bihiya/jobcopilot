@@ -137,7 +137,7 @@ export default function ConnectedSitesPanel() {
     setBusySite(normalizedSite);
     setAlert(null);
     try {
-      const response = await fetch("/api/site-auth/status", {
+      const response = await fetch("/api/site-auth/start", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ site: normalizedSite })

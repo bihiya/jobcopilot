@@ -7,8 +7,16 @@ import {
   Box,
   Button,
   Chip,
+  Collapse,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   FormControl,
   InputLabel,
+  LinearProgress,
+  List,
+  ListItem,
+  ListItemText,
   MenuItem,
   Paper,
   Select,
@@ -26,6 +34,7 @@ import {
 import DoneAllIcon from "@mui/icons-material/DoneAll";
 import WorkOutlineIcon from "@mui/icons-material/WorkOutline";
 import LoginIcon from "@mui/icons-material/Login";
+import HistoryIcon from "@mui/icons-material/History";
 import {
   clearToast,
   initializeDashboard,
@@ -63,6 +72,10 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
   const [authStatus, setAuthStatus] = useState(null);
   const [checkingAuth, setCheckingAuth] = useState(false);
   const [connectingAuth, setConnectingAuth] = useState(false);
+  const [processLog, setProcessLog] = useState([]);
+  const [auditDialogJob, setAuditDialogJob] = useState(null);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
 
   useEffect(() => {
     dispatch(
@@ -129,7 +142,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
         dispatch(
           setToast({
             type: "error",
-            message: `${payload.blocker.type}: ${payload.blocker.message}`
+            message: `${payload.blocker.type || "blocked"}: ${payload.blocker.message || ""}`
           })
         );
         return;
@@ -217,7 +230,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
         throw new Error(payload?.message || payload?.error || "Failed to check login status.");
       }
 
-      if (payload?.authenticated) {
+      if (payload?.connected || payload?.authenticated) {
         setAuthStatus(null);
         dispatch(
           setToast({
@@ -326,6 +339,48 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
               {processing ? "Processing..." : "Process Job"}
             </Button>
           </Box>
+          {processing ? (
+            <Box sx={{ mt: 1 }}>
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                Processing… checking profile, site login, mappings, and apply flow.
+              </Typography>
+              <LinearProgress />
+            </Box>
+          ) : null}
+
+          {!processing && processLog.length > 0 ? (
+            <Collapse in>
+              <Paper variant="outlined" sx={{ mt: 2, p: 2, borderRadius: 2, bgcolor: "action.hover" }}>
+                <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+                  Last process run
+                </Typography>
+                <List dense disablePadding sx={{ maxHeight: 280, overflow: "auto" }}>
+                  {processLog.map((entry, i) => (
+                    <ListItem key={`${entry.at}-${i}`} disableGutters sx={{ py: 0.25 }}>
+                      <ListItemText
+                        primary={
+                          <Typography variant="body2" component="span" fontWeight={600}>
+                            {entry.step}
+                          </Typography>
+                        }
+                        secondary={
+                          <>
+                            <Typography variant="caption" color="text.secondary" display="block">
+                              {entry.message}
+                            </Typography>
+                            <Typography variant="caption" color="text.disabled">
+                              {entry.at ? new Date(entry.at).toLocaleString() : ""}
+                            </Typography>
+                          </>
+                        }
+                      />
+                    </ListItem>
+                  ))}
+                </List>
+              </Paper>
+            </Collapse>
+          ) : null}
+
           {authStatus?.requiresAuth ? (
             <Alert severity="warning" sx={{ mt: 1 }}>
               <Stack spacing={1}>
@@ -425,7 +480,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
                   <TableCell>Status</TableCell>
                   <TableCell>Match score</TableCell>
                   <TableCell>Created</TableCell>
-                  <TableCell>Actions</TableCell>
+                  <TableCell align="right">Actions</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -446,22 +501,32 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
                     </TableCell>
                     <TableCell>{job.matchScore ?? 0}%</TableCell>
                     <TableCell>{new Date(job.createdAt).toLocaleString()}</TableCell>
-                    <TableCell>
-                      {job.status === "applied" ? (
-                        <Typography variant="body2" color="text.secondary">
-                          Already applied
-                        </Typography>
-                      ) : (
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap">
                         <Button
-                          variant="outlined"
+                          variant="text"
                           size="small"
-                          startIcon={<DoneAllIcon />}
-                          onClick={() => onMarkApplied(job.id)}
-                          disabled={markingJobId === job.id}
+                          startIcon={<HistoryIcon />}
+                          onClick={() => openAuditDialog(job)}
                         >
-                          {markingJobId === job.id ? "Saving..." : "Mark as applied"}
+                          Audit log
                         </Button>
-                      )}
+                        {job.status === "applied" ? (
+                          <Typography variant="body2" color="text.secondary" sx={{ alignSelf: "center", px: 1 }}>
+                            Applied
+                          </Typography>
+                        ) : (
+                          <Button
+                            variant="outlined"
+                            size="small"
+                            startIcon={<DoneAllIcon />}
+                            onClick={() => onMarkApplied(job.id)}
+                            disabled={markingJobId === job.id}
+                          >
+                            {markingJobId === job.id ? "Saving..." : "Mark applied"}
+                          </Button>
+                        )}
+                      </Stack>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -492,6 +557,53 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
           </Button>
         </Stack>
       </Paper>
+
+      <Dialog
+        open={Boolean(auditDialogJob)}
+        onClose={() => setAuditDialogJob(null)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          Apply audit log
+          {auditDialogJob?.url ? (
+            <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.5 }}>
+              {auditDialogJob.url}
+            </Typography>
+          ) : null}
+        </DialogTitle>
+        <DialogContent dividers>
+          {auditLoading ? (
+            <LinearProgress />
+          ) : auditLogs.length === 0 ? (
+            <Typography color="text.secondary">No audit entries yet.</Typography>
+          ) : (
+            <List dense>
+              {auditLogs.map((row) => (
+                <ListItem key={row.id} alignItems="flex-start" disableGutters>
+                  <ListItemText
+                    primary={
+                      <Typography variant="body2" fontWeight={600}>
+                        {row.step}
+                      </Typography>
+                    }
+                    secondary={
+                      <>
+                        <Typography variant="body2" color="text.secondary">
+                          {row.message}
+                        </Typography>
+                        <Typography variant="caption" color="text.disabled">
+                          {row.at ? new Date(row.at).toLocaleString() : ""}
+                        </Typography>
+                      </>
+                    }
+                  />
+                </ListItem>
+              ))}
+            </List>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Snackbar
         open={Boolean(toast)}

@@ -45,9 +45,9 @@ function providerFor(source) {
 async function saveExternalJob(job) {
   return prisma.externalJob.upsert({
     where: {
-      source_externalId: {
+      source_sourceJobId: {
         source: job.source,
-        externalId: job.externalId
+        sourceJobId: job.externalId
       }
     },
     update: {
@@ -56,11 +56,22 @@ async function saveExternalJob(job) {
       location: job.location,
       description: job.description,
       url: job.url,
-      titleMatch: job.titleMatch,
+      titleMatched: job.titleMatch,
       descriptionMatch: job.descriptionMatch,
-      matchScore: job.matchScore
+      score: job.matchScore
     },
-    create: job
+    create: {
+      source: job.source,
+      sourceJobId: job.externalId,
+      url: job.url,
+      title: job.title,
+      company: job.company,
+      location: job.location,
+      description: job.description,
+      titleMatched: job.titleMatch,
+      descriptionMatch: job.descriptionMatch,
+      score: job.matchScore
+    }
   });
 }
 

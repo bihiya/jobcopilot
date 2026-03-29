@@ -10,14 +10,16 @@ export async function POST(request) {
 
   try {
     const body = await request.json();
-    const response = await fetch(`${SERVER_URL}/connect/start`, {
+    const siteUrl = body?.siteUrl ?? body?.jobUrl ?? null;
+    const response = await fetch(`${SERVER_URL}/auth/connect/start`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
         userId: session.user.id,
-        site: body?.site
+        site: body?.site,
+        siteUrl
       })
     });
 
@@ -39,14 +41,16 @@ export async function PATCH(request) {
 
   try {
     const body = await request.json();
+    const siteUrl = body?.siteUrl ?? body?.jobUrl ?? null;
     const response = await fetch(`${SERVER_URL}/auth/connect/validate`, {
-      method: "PATCH",
+      method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
         userId: session.user.id,
-        site: body?.site
+        site: body?.site,
+        siteUrl
       })
     });
 
@@ -69,13 +73,14 @@ export async function DELETE(request) {
   try {
     const body = await request.json();
     const response = await fetch(`${SERVER_URL}/auth/connect/disconnect`, {
-      method: "DELETE",
+      method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
         userId: session.user.id,
-        site: body?.site
+        site: body?.site,
+        siteUrl: body?.siteUrl ?? body?.jobUrl ?? null
       })
     });
 
