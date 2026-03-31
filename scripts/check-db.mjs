@@ -7,7 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CONNECT_TIMEOUT_MS = 12_000;
+const CONNECT_TIMEOUT_MS = Number(process.env.CHECK_DB_TIMEOUT_MS || 22_000);
 
 try {
   const { default: dotenv } = await import("dotenv");

@@ -27,18 +27,29 @@ model User {
 }
 
 model UserProfile {
-  id         String  @id @default(auto()) @map("_id") @db.ObjectId
-  userId     String  @unique @db.ObjectId
-  phone      String?
-  experience String?
-  skills     Json?
-  resumeUrl  String?
-  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String    @unique @db.ObjectId
+  phone            String?
+  dateOfBirth      DateTime?
+  currentLocation  String?
+  currentSalary    String?
+  expectedSalary   String?
+  noticePeriod     String?
+  linkedInUrl      String?
+  portfolioUrl     String?
+  headline         String?
+  education        String?
+  experience       String?
+  skills           Json?
+  resumeUrl        String?
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 enum JobStatus {
   pending
+  auth_required
   ready
+  applying
   applied
 }
 

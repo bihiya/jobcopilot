@@ -54,6 +54,82 @@ function isAuthenticatedHeuristic(pageUrl, pageContent) {
   return true;
 }
 
+const AUTH_PATH_RE = /\/(login|signin|sign-in|signup|sign-up|register|oauth|auth)\b/i;
+
+/**
+ * Load the job URL in a fresh browser context and guess whether the user must save
+ * an employer-site session (login/signup) before we can apply. Public apply forms
+ * (file upload, apply without password, etc.) return requiresSavedSession: false.
+ */
+async function probeJobPageRequiresSavedSession(jobUrl) {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(jobUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+    const pathname = new URL(page.url()).pathname.toLowerCase();
+    if (AUTH_PATH_RE.test(pathname)) {
+      return { requiresSavedSession: true, reason: "auth_path" };
+    }
+
+    const probe = await page.evaluate(() => {
+      const lower = (document.body?.innerText || "").slice(0, 16000).toLowerCase();
+      return {
+        hasPassword: !!document.querySelector('input[type="password"]'),
+        hasFile: !!document.querySelector('input[type="file"]'),
+        hasTextarea: !!document.querySelector("textarea"),
+        formCount: document.querySelectorAll("form").length,
+        lower
+      };
+    });
+
+    if (probe.hasFile) {
+      return { requiresSavedSession: false, reason: "has_file_upload" };
+    }
+    if (probe.formCount > 0 && probe.hasTextarea && !probe.hasPassword) {
+      return { requiresSavedSession: false, reason: "form_without_password" };
+    }
+
+    if (probe.hasPassword && !probe.hasFile) {
+      const loginIntent =
+        /\b(sign in|log in|sign-in|log-in)\b[\s\S]{0,120}\b(apply|your account|continue)\b/i.test(
+          probe.lower
+        ) ||
+        /\b(sign in|log in)\b.*\b(to|with)\b.*\b(google|linkedin|microsoft|sso)\b/i.test(
+          probe.lower
+        ) ||
+        /\bcreate (an? )?(account|profile)\b[\s\S]{0,120}\b(to|before)\b[\s\S]{0,80}\b(apply|continue)\b/i.test(
+          probe.lower
+        );
+      if (loginIntent) {
+        return { requiresSavedSession: true, reason: "login_or_sso_gate" };
+      }
+    }
+
+    if (
+      probe.hasPassword &&
+      !probe.hasFile &&
+      /\b(sign up|register|create (an? )?account)\b/i.test(probe.lower)
+    ) {
+      return { requiresSavedSession: true, reason: "signup_gate" };
+    }
+
+    if (/\b(apply|application|submit (your|an) application)\b/i.test(probe.lower) && !probe.hasPassword) {
+      return { requiresSavedSession: false, reason: "apply_without_password" };
+    }
+
+    return { requiresSavedSession: false, reason: "no_clear_login_gate" };
+  } catch (err) {
+    console.warn("probeJobPageRequiresSavedSession:", err?.message || err);
+    return { requiresSavedSession: true, reason: "probe_failed" };
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+}
+
 function getSessionFilePath({ userId, site }) {
   const safeUserId = ensureSafeSegment(userId);
   const safeSite = ensureSafeSegment(site);
@@ -216,10 +292,34 @@ async function disconnectSiteAuthSession({ userId, site }) {
   };
 }
 
-async function canAutoApply({ userId, site }) {
+async function canAutoApply({ userId, site, jobUrl }) {
   const status = await getSiteAuthStatus({ userId, site });
+  if (status.connected) {
+    return {
+      authenticated: true,
+      hadStoredSession: true,
+      probeReason: null
+    };
+  }
+  if (!jobUrl) {
+    return {
+      authenticated: false,
+      hadStoredSession: false,
+      probeReason: null
+    };
+  }
+  const probe = await probeJobPageRequiresSavedSession(jobUrl);
+  if (!probe.requiresSavedSession) {
+    return {
+      authenticated: true,
+      hadStoredSession: false,
+      probeReason: probe.reason
+    };
+  }
   return {
-    authenticated: status.connected
+    authenticated: false,
+    hadStoredSession: false,
+    probeReason: probe.reason
   };
 }
 
@@ -246,22 +346,55 @@ async function validateSiteAuthSession({ userId, site, siteUrl }) {
   };
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Site login must open a visible browser on the machine running this API (your Mac when
+ * developing locally). PLAYWRIGHT_HEADLESS does not apply here — use PLAYWRIGHT_CONNECT_HEADLESS=true
+ * only for headless/CI where no display is available.
+ */
 async function beginSiteAuthSession({ userId, site, siteUrl }) {
   const storageStatePath = getSessionFilePath({ userId, site });
   await ensureStorageDirectory(storageStatePath);
 
-  const connectUrl = siteUrl || `https://${site}`;
-  const headless = String(process.env.PLAYWRIGHT_HEADLESS || "false") === "true";
-  const waitMs = Number(process.env.PLAYWRIGHT_CONNECT_WAIT_MS || 90000);
-  const browser = await chromium.launch({ headless });
+  const connectUrl = (siteUrl && String(siteUrl).trim()) || `https://${site}`;
+  const headless = String(process.env.PLAYWRIGHT_CONNECT_HEADLESS || "").toLowerCase() === "true";
+  const waitMs = Number(process.env.PLAYWRIGHT_CONNECT_WAIT_MS || 120000);
+  const saveEveryMs = Number(process.env.PLAYWRIGHT_CONNECT_SAVE_INTERVAL_MS || 5000);
+
+  const browser = await chromium.launch({
+    headless,
+    channel: headless ? undefined : process.env.PLAYWRIGHT_CHROMIUM_CHANNEL || undefined
+  });
 
   try {
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.goto(connectUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
 
-    // Manual assisted login window. Keep it open while user logs in.
-    await page.waitForTimeout(waitMs);
+    // While the user signs in, persist cookies periodically so "Check login status" works before the window closes.
+    let elapsed = 0;
+    while (elapsed < waitMs) {
+      const slice = Math.min(saveEveryMs, waitMs - elapsed);
+      await delay(slice);
+      elapsed += slice;
+      try {
+        await context.storageState({ path: storageStatePath });
+        const content = await page.content();
+        const blocker = detectBlocker(content);
+        const authenticated = blocker ? false : isAuthenticatedHeuristic(page.url(), content);
+        await upsertAuthSession({
+          userId,
+          site,
+          storageStatePath,
+          isAuthenticated: authenticated
+        });
+      } catch (persistErr) {
+        console.warn("Site auth periodic save skipped:", persistErr?.message || persistErr);
+      }
+    }
 
     const content = await page.content();
     const blocker = detectBlocker(content);
@@ -306,5 +439,6 @@ module.exports = {
   validateSiteAuthSession,
   markSessionChecked,
   detectBlocker,
-  isAuthenticatedHeuristic
+  isAuthenticatedHeuristic,
+  probeJobPageRequiresSavedSession
 };

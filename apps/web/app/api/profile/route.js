@@ -7,6 +7,28 @@ function unauthorized() {
   return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 }
 
+function normalizeSkills(raw) {
+  if (!raw) return [];
+  const list = Array.isArray(raw) ? raw : [];
+  const seen = new Set();
+  const out = [];
+  for (const item of list) {
+    const s = String(item || "").trim();
+    if (!s) continue;
+    const key = s.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
+}
+
+function strOrNull(v) {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim();
+  return s || null;
+}
+
 export async function GET() {
   try {
     const session = await getServerSession(authOptions);
@@ -15,7 +37,7 @@ export async function GET() {
     }
 
     const profile = await prisma.userProfile.findUnique({
-      where: { userId: session.user.id },
+      where: { userId: session.user.id }
     });
 
     return NextResponse.json({ profile }, { status: 200 });
@@ -33,26 +55,38 @@ export async function POST(request) {
     }
 
     const body = await request.json();
-    const phone = body.phone ?? null;
-    const experience = body.experience ?? null;
-    const skills = Array.isArray(body.skills) ? body.skills : body.skills ?? [];
-    const resumeUrl = body.resumeUrl ?? null;
+    const skills = normalizeSkills(body.skills);
+    const dateRaw = strOrNull(body.dateOfBirth);
+
+    let dateOfBirth = null;
+    if (dateRaw) {
+      const d = new Date(`${dateRaw}T12:00:00.000Z`);
+      if (!Number.isNaN(d.getTime())) dateOfBirth = d;
+    }
+
+    const data = {
+      phone: strOrNull(body.phone),
+      dateOfBirth,
+      currentLocation: strOrNull(body.currentLocation),
+      currentSalary: strOrNull(body.currentSalary),
+      expectedSalary: strOrNull(body.expectedSalary),
+      noticePeriod: strOrNull(body.noticePeriod),
+      linkedInUrl: strOrNull(body.linkedInUrl),
+      portfolioUrl: strOrNull(body.portfolioUrl),
+      headline: strOrNull(body.headline),
+      education: strOrNull(body.education),
+      experience: strOrNull(body.experience),
+      skills,
+      resumeUrl: strOrNull(body.resumeUrl)
+    };
 
     const profile = await prisma.userProfile.upsert({
       where: { userId: session.user.id },
-      update: {
-        phone,
-        experience,
-        skills,
-        resumeUrl,
-      },
+      update: data,
       create: {
         userId: session.user.id,
-        phone,
-        experience,
-        skills,
-        resumeUrl,
-      },
+        ...data
+      }
     });
 
     return NextResponse.json({ profile }, { status: 200 });

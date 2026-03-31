@@ -4,6 +4,10 @@ require("dotenv").config({
 });
 
 const express = require("express");
+const {
+  isDatabaseUnavailableError,
+  databaseUnavailableResponse
+} = require("./db-connection-error");
 const { processJob } = require("./processJob");
 const {
   beginSiteAuthSession,
@@ -13,6 +17,9 @@ const {
   normalizeSiteFromUrl
 } = require("./siteAuthSession");
 const { fetchAndStorePublicJobs } = require("./publicJobFetch");
+
+/** One connect flow per user+site so double-clicks do not spawn multiple browsers. */
+const connectFlowLocks = new Map();
 
 const app = express();
 app.use(express.json());
@@ -27,6 +34,9 @@ app.post("/process", async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error("Failed to process job:", error);
+    if (isDatabaseUnavailableError(error)) {
+      return res.status(503).json(databaseUnavailableResponse());
+    }
     res.status(500).json({
       error: "INTERNAL_SERVER_ERROR",
       message: error.message || "Unexpected error while processing job"
@@ -88,18 +98,48 @@ app.post("/auth/connect/start", async (req, res) => {
       return res.status(400).json({ error: "site or siteUrl is required" });
     }
 
-    const result = await beginSiteAuthSession({
-      userId,
+    const connectUrl = (siteUrl && String(siteUrl).trim()) || `https://${resolvedSite}`;
+    const lockKey = `${userId}::${resolvedSite}`;
+
+    if (connectFlowLocks.has(lockKey)) {
+      return res.json({
+        site: resolvedSite,
+        loginUrl: connectUrl,
+        inProgress: true,
+        message:
+          "A login window is already open for this site on the machine running the API server. Finish there or wait until it closes."
+      });
+    }
+
+    connectFlowLocks.set(lockKey, true);
+
+    res.json({
       site: resolvedSite,
-      siteUrl
+      loginUrl: connectUrl,
+      started: true,
+      message:
+        "A Chromium window should open on the computer that runs the JobCopilot server (e.g. your Mac). Sign in in that window — not only in this browser tab."
     });
-    return res.json(result);
+
+    try {
+      await beginSiteAuthSession({
+        userId,
+        site: resolvedSite,
+        siteUrl
+      });
+    } catch (err) {
+      console.error("Connect flow failed:", err);
+    } finally {
+      connectFlowLocks.delete(lockKey);
+    }
   } catch (error) {
     console.error("Failed to start connect flow:", error);
-    return res.status(500).json({
-      error: "INTERNAL_SERVER_ERROR",
-      message: error.message || "Unexpected error during connect flow"
-    });
+    if (!res.headersSent) {
+      return res.status(500).json({
+        error: "INTERNAL_SERVER_ERROR",
+        message: error.message || "Unexpected error during connect flow"
+      });
+    }
   }
 });
 

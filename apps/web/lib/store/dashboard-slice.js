@@ -51,6 +51,10 @@ const dashboardSlice = createSlice({
       const nextJob = action.payload;
       state.jobs = state.jobs.map((job) => (job.id === nextJob.id ? nextJob : job));
     },
+    removeJob(state, action) {
+      const id = action.payload;
+      state.jobs = state.jobs.filter((job) => job.id !== id);
+    },
     setToast(state, action) {
       state.toast = action.payload;
     },
@@ -69,6 +73,7 @@ export const {
   setMarkingJobId,
   upsertJob,
   replaceJob,
+  removeJob,
   setToast,
   clearToast
 } = dashboardSlice.actions;

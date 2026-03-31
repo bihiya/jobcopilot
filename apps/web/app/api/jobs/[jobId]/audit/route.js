@@ -2,13 +2,13 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 
-export async function GET(_request, { params }) {
+export async function GET(_request, context) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const jobId = params?.jobId;
+  const { jobId } = await context.params;
   if (!jobId) {
     return NextResponse.json({ error: "jobId is required" }, { status: 400 });
   }

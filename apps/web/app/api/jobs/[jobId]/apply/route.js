@@ -32,13 +32,13 @@ async function markApplied(session, jobId) {
   return NextResponse.json({ job: updated }, { status: 200 });
 }
 
-export async function POST(_request, { params }) {
+export async function POST(_request, context) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const jobId = params?.jobId;
+  const { jobId } = await context.params;
   if (!jobId) {
     return NextResponse.json({ error: "jobId is required" }, { status: 400 });
   }
@@ -51,13 +51,13 @@ export async function POST(_request, { params }) {
   }
 }
 
-export async function PATCH(_request, { params }) {
+export async function PATCH(_request, context) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const jobId = params?.jobId;
+  const { jobId } = await context.params;
   if (!jobId) {
     return NextResponse.json({ error: "jobId is required" }, { status: 400 });
   }

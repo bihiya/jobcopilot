@@ -57,6 +57,22 @@ function getValueFromProfile(profile, mappedTo) {
     return profile.resumeUrl ?? null;
   }
 
+  if (mappedTo === "dateOfBirth") {
+    if (!profile.dateOfBirth) return null;
+    const d = new Date(profile.dateOfBirth);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 10);
+  }
+
+  if (mappedTo === "currentLocation") return profile.currentLocation ?? null;
+  if (mappedTo === "currentSalary") return profile.currentSalary ?? null;
+  if (mappedTo === "expectedSalary") return profile.expectedSalary ?? null;
+  if (mappedTo === "noticePeriod") return profile.noticePeriod ?? null;
+  if (mappedTo === "linkedInUrl") return profile.linkedInUrl ?? null;
+  if (mappedTo === "portfolioUrl") return profile.portfolioUrl ?? null;
+  if (mappedTo === "headline") return profile.headline ?? null;
+  if (mappedTo === "education") return profile.education ?? null;
+
   return null;
 }
 
@@ -175,7 +191,10 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     {
       hasPhone: Boolean(profile.phone),
       hasExperience: Boolean(profile.experience),
-      hasResume: Boolean(profile.resumeUrl)
+      hasResume: Boolean(profile.resumeUrl),
+      hasHeadline: Boolean(profile.headline),
+      hasLocation: Boolean(profile.currentLocation),
+      hasLinkedIn: Boolean(profile.linkedInUrl)
     }
   );
 
@@ -199,6 +218,19 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     canApplyWithoutAuth: pageAccess.canApplyWithoutAuth,
     signals: pageAccess.signals,
     error: pageAccess.error || null
+  });
+
+  const authProbe = await canAutoApply({ userId, site, jobUrl });
+  const authProbeMessage = authProbe.authenticated
+    ? authProbe.hadStoredSession
+      ? "Saved site session present"
+      : `No saved session needed (${authProbe.probeReason || "public or open apply"})`
+    : "Employer login or account required — connect this site in JobCopilot";
+  await audit("auth_probe", authProbeMessage, {
+    site,
+    authenticated: authProbe.authenticated,
+    hadStoredSession: authProbe.hadStoredSession,
+    probeReason: authProbe.probeReason
   });
 
   const effectiveFormFields =
@@ -241,19 +273,26 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     });
   }
 
-  let authState = { authenticated: true };
+  let authState;
   if (!pageAccess.canApplyWithoutAuth && pageAccess.requiresLogin) {
-    authState = await canAutoApply({ userId, site });
+    authState = {
+      authenticated: authProbe.authenticated,
+      hadStoredSession: authProbe.hadStoredSession
+    };
     await audit("auth_check", authState.authenticated ? "Site session authenticated" : "Site session missing or expired", {
       site,
-      authenticated: authState.authenticated
+      authenticated: authState.authenticated,
+      hadStoredSession: authState.hadStoredSession
     });
   } else {
+    authState = { authenticated: true, hadStoredSession: authProbe.hadStoredSession };
     await audit("auth_check", "Auth session check skipped (direct apply path)", {
       site,
-      authenticated: true
+      authenticated: true,
+      hadStoredSession: authProbe.hadStoredSession
     });
   }
+
   await setProcessStep({
     idempotencyKey,
     step: "AUTH_READY",
@@ -262,51 +301,6 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       requiresLogin: pageAccess.requiresLogin
     }
   });
-
-  const effectiveFormFields =
-    Array.isArray(formFields) && formFields.length > 0
-      ? formFields
-      : pageAccess.parsedFields || [];
-  await audit("job_fields_parsed", "Resolved candidate form fields for mapping", {
-    providedByClient: Array.isArray(formFields) ? formFields.length : 0,
-    parsedFromPage: Array.isArray(pageAccess.parsedFields) ? pageAccess.parsedFields.length : 0,
-    effectiveCount: effectiveFormFields.length
-  });
-
-  let domainCredential = null;
-  if (!pageAccess.canApplyWithoutAuth) {
-    domainCredential = await ensureDomainCredential({
-      userId,
-      site,
-      email: profile.user?.email
-    });
-
-    await audit(
-      "domain_credentials",
-      domainCredential.createdNow
-        ? "Created domain credentials for site"
-        : "Reused existing domain credentials for site",
-      {
-        site,
-        username: domainCredential.username,
-        createdNow: domainCredential.createdNow
-      }
-    );
-  }
-
-  let authState = { authenticated: true };
-  if (!pageAccess.canApplyWithoutAuth && pageAccess.requiresLogin) {
-    authState = await canAutoApply({ userId, site });
-    await audit("auth_check", authState.authenticated ? "Site session authenticated" : "Site session missing or expired", {
-      site,
-      authenticated: authState.authenticated
-    });
-  } else {
-    await audit("auth_check", "Auth session check skipped (direct apply path)", {
-      site,
-      authenticated: true
-    });
-  }
 
   if (!authState.authenticated) {
     await setProcessStep({
@@ -319,7 +313,7 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     const blockedJob = await prisma.job.update({
       where: { id: job.id },
       data: {
-        status: "pending"
+        status: "auth_required"
       }
     });
 
@@ -331,7 +325,7 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       blocker: {
         type: "auth_required",
         site,
-        message: `Login required for ${site}. Connect this site once to continue.`
+        message: `This posting on ${site} looks like it needs an employer login or account. Connect this site once in JobCopilot, sign in there, then try again.`
       },
       domainCredential,
       pageAccess,
@@ -444,6 +438,8 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     }
   });
 
+  const preApplyStatus = status;
+
   await audit("fields_mapped", "Field mapping pass complete", {
     filled: filledFields.length,
     missing: missingFields.length,
@@ -461,8 +457,14 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     }
   });
 
+  await prisma.job.update({
+    where: { id: job.id },
+    data: { status: "applying" }
+  });
+
   await audit("apply_flow_start", "Opening job page to verify session / apply", {
-    filledFieldCount: filledFields.length
+    filledFieldCount: filledFields.length,
+    jobStatus: "applying"
   });
 
   const applyResult = await runApplyFlowWithPlaywright({
@@ -470,7 +472,9 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     site,
     jobUrl,
     filledFields,
-    skipAuthVerification: pageAccess.canApplyWithoutAuth
+    skipAuthVerification: pageAccess.canApplyWithoutAuth,
+    allowWithoutSavedSession:
+      pageAccess.canApplyWithoutAuth || (authProbe.authenticated && !authProbe.hadStoredSession)
   });
 
   if (applyResult?.blocker) {
@@ -493,7 +497,8 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       ? `${applyResult.blocker.message} Manual prefill bundle generated.`
       : applyResult.blocker.message || "Apply flow blocked";
     await audit("apply_blocked", blockedMessage, {
-      type: applyResult.blocker.type
+      type: applyResult.blocker.type,
+      fillSummary: applyResult.fillSummary ?? null
     });
     return {
       job: updatedJob,
@@ -501,6 +506,7 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       requiresAuth: false,
       blocker: applyResult.blocker,
       applyResult,
+      fillSummary: applyResult.fillSummary ?? null,
       filledFields,
       missingFields,
       reusedMappings: existingMappings.length,
@@ -555,14 +561,21 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
   await audit(
     "apply_flow_complete",
     applyResult?.note || "Apply flow finished (no auto-submit)",
-    {}
+    { fillSummary: applyResult.fillSummary ?? null }
   );
 
+  const afterApplyJob = await prisma.job.update({
+    where: { id: job.id },
+    data: { status: preApplyStatus, matchScore }
+  });
+
   return {
-    job: updatedJob,
+    job: afterApplyJob,
     site,
     requiresAuth: false,
     applyResult,
+    fillSummary: applyResult.fillSummary ?? null,
+    applyNote: applyResult?.note ?? null,
     filledFields,
     missingFields,
     reusedMappings: existingMappings.length,

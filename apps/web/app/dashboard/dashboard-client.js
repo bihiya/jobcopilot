@@ -36,6 +36,7 @@ import WorkOutlineIcon from "@mui/icons-material/WorkOutline";
 import LoginIcon from "@mui/icons-material/Login";
 import HistoryIcon from "@mui/icons-material/History";
 import SmartToyIcon from "@mui/icons-material/SmartToy";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
   clearToast,
   initializeDashboard,
@@ -46,19 +47,39 @@ import {
   setPageSize,
   setProcessing,
   setToast,
-  upsertJob
+  upsertJob,
+  removeJob
 } from "@/lib/store/dashboard-slice";
 
-const FILTERS = ["all", "pending", "ready", "applied"];
+const FILTERS = ["all", "processing", "pending", "auth_required", "ready", "applying", "applied"];
 const PAGE_SIZE_OPTIONS = [5, 10, 25];
+
+function statusLabel(status) {
+  if (status === "auth_required") return "Connect site";
+  if (status === "processing") return "Processing";
+  return status;
+}
 
 function statusColor(status) {
   if (status === "applied") return "success";
+  if (status === "applying") return "secondary";
   if (status === "ready") return "info";
+  if (status === "processing") return "primary";
+  if (status === "auth_required") return "warning";
   return "warning";
 }
 
-export default function DashboardClient({ initialJobs, initialFilter, initialPage }) {
+function isLocalJobId(id) {
+  return typeof id === "string" && id.startsWith("local-");
+}
+
+function filterChipLabel(filter) {
+  if (filter === "auth_required") return "Connect site";
+  if (filter === "all") return "All";
+  return filter.charAt(0).toUpperCase() + filter.slice(1);
+}
+
+export default function DashboardClient({ initialJobs, initialFilter, initialPage, databaseError }) {
   const dispatch = useDispatch();
   const {
     jobs,
@@ -100,6 +121,45 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
   const start = (currentPage - 1) * pageSize;
   const paginatedJobs = filteredJobs.slice(start, start + pageSize);
 
+  function closeAuditDialog() {
+    setAuditDialogJob(null);
+    setAuditLogs([]);
+    setAuditLoading(false);
+  }
+
+  async function openAuditDialog(job) {
+    if (!job?.id) return;
+    setAuditDialogJob(job);
+    setAuditLogs([]);
+
+    if (isLocalJobId(job.id)) {
+      setAuditLoading(false);
+      return;
+    }
+
+    setAuditLoading(true);
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/audit`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        dispatch(
+          setToast({
+            type: "error",
+            message: data?.error || "Failed to load audit log."
+          })
+        );
+        setAuditLogs([]);
+        return;
+      }
+      setAuditLogs(data.logs || []);
+    } catch {
+      dispatch(setToast({ type: "error", message: "Failed to load audit log." }));
+      setAuditLogs([]);
+    } finally {
+      setAuditLoading(false);
+    }
+  }
+
   async function onProcessJob(event) {
     event.preventDefault();
     const jobUrl = String(jobUrlInput || "").trim();
@@ -109,8 +169,24 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       return;
     }
 
+    const tempId = `local-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
     dispatch(setProcessing(true));
     dispatch(clearToast());
+    dispatch(setFilter("all"));
+    dispatch(
+      upsertJob({
+        id: tempId,
+        url: jobUrl,
+        status: "processing",
+        matchScore: null,
+        createdAt: new Date().toISOString()
+      })
+    );
+
+    const replaceOptimisticWithJob = (job) => {
+      dispatch(removeJob(tempId));
+      if (job) dispatch(upsertJob(job));
+    };
 
     try {
       const response = await fetch("/api/process", {
@@ -121,6 +197,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
 
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
+        replaceOptimisticWithJob(null);
         throw new Error(payload?.message || payload?.error || "Failed to process job.");
       }
 
@@ -133,6 +210,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       }
 
       if (payload?.requiresAuth) {
+        replaceOptimisticWithJob(payload.job ?? null);
         setAuthStatus({
           requiresAuth: true,
           site: payload.site,
@@ -142,13 +220,14 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
         dispatch(
           setToast({
             type: "warning",
-            message: `Login required on ${payload.site}. Click connect and sign in once.`
+            message: `Employer login needed on ${payload.site}. Click Connect and sign in once in the Chromium window.`
           })
         );
         return;
       }
 
       if (payload?.blocker) {
+        replaceOptimisticWithJob(payload.job ?? null);
         const isCaptchaRequired =
           payload?.processState?.step === "CAPTCHA_REQUIRED" ||
           payload?.blocker?.type === "captcha";
@@ -163,19 +242,42 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
             prefillFields: payload?.applyResult?.manualPrefill?.fields || []
           });
         }
+        const b = payload.blocker;
+        const fs = payload.fillSummary;
+        const fillHint =
+          fs?.filledCount != null ? ` ${fs.filledCount} field(s) were filled in the browser.` : "";
+        const softBlock = b.type === "captcha" || b.type === "two_factor";
         dispatch(
           setToast({
-            type: isCaptchaRequired ? "warning" : "error",
-            message: `${payload.blocker.type || "blocked"}: ${payload.blocker.message || ""}`
+            type: softBlock ? "warning" : "error",
+            message: `${b.message || b.type || "Blocked"}${fillHint}`
           })
         );
         return;
       }
 
       setCaptchaAssist(null);
+      if (payload?.job) {
+        replaceOptimisticWithJob(payload.job);
+      } else {
+        replaceOptimisticWithJob(null);
+      }
       setJobUrlInput("");
-      dispatch(setToast({ type: "success", message: "Job processed successfully." }));
+      const filled = payload?.fillSummary?.filledCount;
+      const note = payload?.applyNote;
+      dispatch(
+        setToast({
+          type: "success",
+          message:
+            filled != null && filled >= 0
+              ? `Job processed. ${filled} field(s) filled on the employer page.${note ? ` ${note}` : ""}`
+              : note
+                ? `Job processed. ${note}`
+                : "Job processed successfully."
+        })
+      );
     } catch (error) {
+      dispatch(removeJob(tempId));
       dispatch(
         setToast({
           type: "error",
@@ -210,9 +312,12 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
 
       dispatch(
         setToast({
-          type: "success",
+          type: payload.inProgress ? "warning" : "success",
           message:
-            "Login window started. Complete sign-in there, then click Check Login Status."
+            payload.message ||
+            (payload.inProgress
+              ? "Login is already in progress — use the open Chromium window."
+              : "Look for a Chromium window on the machine running the API server, sign in, then click Check Login Status.")
         })
       );
       setAuthStatus({
@@ -317,6 +422,14 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
 
   return (
     <>
+      {databaseError ? (
+        <Alert severity="error" sx={{ mt: 2, borderRadius: 2 }}>
+          <Typography variant="body2" fontWeight={600} gutterBottom>
+            Database unavailable
+          </Typography>
+          <Typography variant="body2">{databaseError}</Typography>
+        </Alert>
+      ) : null}
       <Paper
         elevation={0}
         sx={{
@@ -405,10 +518,45 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
 
           {authStatus?.requiresAuth ? (
             <Alert severity="warning" sx={{ mt: 1 }}>
-              <Stack spacing={1}>
+              <Stack spacing={1.5}>
                 <Typography variant="body2">
-                  Login is required on <strong>{authStatus.site}</strong> before apply can continue.
+                  This posting on <strong>{authStatus.site}</strong> needs an employer account session. Connect once
+                  below so JobCopilot can use a saved browser login for that site.
                 </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  The server opens a <strong>separate Chromium window</strong> on the computer running{" "}
+                  <Box component="span" sx={{ fontFamily: "monospace", fontSize: "0.85em" }}>
+                    npm run dev
+                  </Box>{" "}
+                  (port 4000). Check your Dock/taskbar for Chromium — signing in only inside this browser tab does{" "}
+                  <em>not</em> save the session for automation. If no window appears, ensure{" "}
+                  <Box component="span" sx={{ fontFamily: "monospace", fontSize: "0.85em" }}>
+                    PLAYWRIGHT_CONNECT_HEADLESS
+                  </Box>{" "}
+                  is not set to{" "}
+                  <Box component="span" sx={{ fontFamily: "monospace" }}>
+                    true
+                  </Box>{" "}
+                  in{" "}
+                  <Box component="span" sx={{ fontFamily: "monospace" }}>
+                    .env
+                  </Box>
+                  .
+                </Typography>
+                {authStatus.loginUrl ? (
+                  <Button
+                    component="a"
+                    href={authStatus.loginUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    variant="text"
+                    size="small"
+                    startIcon={<OpenInNewIcon />}
+                    sx={{ alignSelf: "flex-start", textTransform: "none" }}
+                  >
+                    Open job site (reference — use Chromium window to capture login)
+                  </Button>
+                ) : null}
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
                   <Button
                     variant="outlined"
@@ -416,7 +564,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
                     onClick={onConnectSite}
                     disabled={connectingAuth}
                   >
-                    {connectingAuth ? "Starting..." : "Connect/Login Once"}
+                    {connectingAuth ? "Starting..." : "Connect site"}
                   </Button>
                   <Button variant="contained" onClick={onCheckLoginStatus} disabled={checkingAuth}>
                     {checkingAuth ? "Checking..." : "Check Login Status"}
@@ -538,14 +686,14 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
             return (
               <Chip
                 key={filter}
-                label={filter}
+                label={filterChipLabel(filter)}
                 clickable
                 color={active ? "primary" : "default"}
                 variant={active ? "filled" : "outlined"}
                 onClick={() => {
                   dispatch(setFilter(filter));
                 }}
-                sx={{ textTransform: "capitalize" }}
+                sx={{ textTransform: "none" }}
               />
             );
           })}
@@ -575,13 +723,17 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
                     </TableCell>
                     <TableCell>
                       <Chip
-                        label={job.status}
+                        label={statusLabel(job.status)}
                         size="small"
                         color={statusColor(job.status)}
-                        sx={{ textTransform: "capitalize", color: "white" }}
+                        sx={{ textTransform: "none", color: "white" }}
                       />
                     </TableCell>
-                    <TableCell>{job.matchScore ?? 0}%</TableCell>
+                    <TableCell>
+                      {job.matchScore == null && (job.status === "processing" || isLocalJobId(job.id))
+                        ? "—"
+                        : `${job.matchScore ?? 0}%`}
+                    </TableCell>
                     <TableCell>{new Date(job.createdAt).toLocaleString()}</TableCell>
                     <TableCell align="right">
                       <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap">
@@ -596,6 +748,10 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
                         {job.status === "applied" ? (
                           <Typography variant="body2" color="text.secondary" sx={{ alignSelf: "center", px: 1 }}>
                             Applied
+                          </Typography>
+                        ) : job.status === "applying" || job.status === "processing" || isLocalJobId(job.id) ? (
+                          <Typography variant="body2" color="text.secondary" sx={{ alignSelf: "center", px: 1 }}>
+                            {job.status === "processing" || isLocalJobId(job.id) ? "Processing…" : "Applying…"}
                           </Typography>
                         ) : (
                           <Button
@@ -655,7 +811,11 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
           ) : null}
         </DialogTitle>
         <DialogContent dividers>
-          {auditLoading ? (
+          {auditDialogJob && isLocalJobId(auditDialogJob.id) ? (
+            <Typography color="text.secondary">
+              Audit log is available after this run finishes and the job is saved.
+            </Typography>
+          ) : auditLoading ? (
             <LinearProgress />
           ) : auditLogs.length === 0 ? (
             <Typography color="text.secondary">No audit entries yet.</Typography>

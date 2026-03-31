@@ -1,49 +1,147 @@
+const fs = require("fs");
 const path = require("path");
-const fs = require("fs/promises");
 const { chromium } = require("playwright");
-const { getSessionFilePath, markSessionChecked } = require("./siteAuthSession");
+const {
+  getSessionFilePath,
+  markSessionChecked,
+  detectBlocker,
+  isAuthenticatedHeuristic
+} = require("./siteAuthSession");
 const { markCredentialResult } = require("./domainCredentialStore");
 
-function detectBlocker(pageContent) {
-  const text = (pageContent || "").toLowerCase();
-  if (text.includes("captcha") || text.includes("verify you are human")) {
-    return { blockerType: "captcha", message: "Captcha challenge detected." };
-  }
-  if (
-    text.includes("two-factor") ||
-    text.includes("2fa") ||
-    text.includes("verification code")
-  ) {
-    return { blockerType: "two_factor", message: "Two-factor verification required." };
-  }
-  if (text.includes("sign up") || text.includes("create account")) {
-    return { blockerType: "signup_required", message: "Signup is required on target site." };
-  }
-  return null;
-}
+/**
+ * Try to fill one form control matched by fieldIdentifier (name, id, label, placeholder).
+ */
+async function tryFillElement(locator, value) {
+  const count = await locator.count();
+  if (!count) return false;
+  const el = locator.first();
+  const tag = await el.evaluate((node) => node.tagName.toLowerCase());
+  const inputType = (await el.getAttribute("type"))?.toLowerCase() || "text";
+  if (inputType === "hidden") return false;
+  if (inputType === "file") return false;
+  if (inputType === "checkbox" || inputType === "radio") return false;
 
-function isAuthenticatedHeuristic(pageUrl, pageContent) {
-  const url = (pageUrl || "").toLowerCase();
-  const text = (pageContent || "").toLowerCase();
-  if (url.includes("login") || url.includes("signin")) return false;
-  if (
-    text.includes("sign in") ||
-    text.includes("log in") ||
-    text.includes("continue with google")
-  ) {
-    return false;
+  const str = String(value ?? "");
+  if (tag === "select") {
+    await el.selectOption({ label: str }).catch(async () => {
+      await el.selectOption({ value: str }).catch(async () => {
+        const opts = await el.locator("option").all();
+        for (const opt of opts) {
+          const t = (await opt.textContent())?.trim();
+          if (t && str.toLowerCase().includes(t.toLowerCase())) {
+            await opt.click();
+            return;
+          }
+        }
+      });
+    });
+    return true;
   }
+
+  await el.fill(str);
   return true;
 }
 
-async function verifyAuthenticatedSession({ userId, site, jobUrl }) {
+async function fillOneField(page, fieldIdentifier, value) {
+  if (value == null || value === "") return false;
+  const id = String(fieldIdentifier || "").trim();
+  if (!id) return false;
+  const strVal = String(value);
+
+  const safeAttr = id.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const byName = page.locator(
+    `input[name="${safeAttr}"], textarea[name="${safeAttr}"], select[name="${safeAttr}"]`
+  );
+  if (await byName.count()) {
+    if (await tryFillElement(byName, strVal)) return true;
+  }
+
+  if (/^[\w.-]+$/.test(id)) {
+    const byId = page.locator(`[id="${id.replace(/"/g, '\\"')}"]`);
+    if (await byId.count()) {
+      if (await tryFillElement(byId, strVal)) return true;
+    }
+  }
+
+  try {
+    const byLabel = page.getByLabel(id, { exact: false }).first();
+    if (await byLabel.count()) {
+      if (await tryFillElement(byLabel, strVal)) return true;
+    }
+  } catch {
+    /* no matching label */
+  }
+
+  try {
+    const byPh = page.getByPlaceholder(id, { exact: false }).first();
+    if (await byPh.count()) {
+      if (await tryFillElement(byPh, strVal)) return true;
+    }
+  } catch {
+    /* no matching placeholder */
+  }
+
+  return false;
+}
+
+/**
+ * Fill mapped fields on the current page (best-effort). Runs before captcha / auth checks.
+ */
+async function fillFieldsOnPage(page, filledFields) {
+  const attempts = [];
+  let filledCount = 0;
+  for (const field of filledFields || []) {
+    const ok = await fillOneField(page, field.fieldIdentifier, field.value);
+    attempts.push({ fieldIdentifier: field.fieldIdentifier, ok });
+    if (ok) filledCount += 1;
+  }
+  return { filledCount, attempts };
+}
+
+async function verifyAnonymousJobPage({ jobUrl }) {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(jobUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+    return {
+      isAuthenticated: true,
+      blocker: null,
+      anonymous: true
+    };
+  } catch (error) {
+    return {
+      isAuthenticated: false,
+      blocker: {
+        blockerType: "site_error",
+        message: error.message || "Failed to open job page without a saved site session."
+      }
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
+async function verifyAuthenticatedSession({
+  userId,
+  site,
+  jobUrl,
+  allowWithoutSavedSession = false
+}) {
   const sessionFile = getSessionFilePath({ userId, site });
-  if (!sessionFile) {
+  const hasSessionFile = fs.existsSync(sessionFile);
+
+  if (!hasSessionFile && allowWithoutSavedSession) {
+    return verifyAnonymousJobPage({ jobUrl });
+  }
+
+  if (!hasSessionFile) {
     return {
       isAuthenticated: false,
       blocker: {
         blockerType: "auth_required",
-        message: `Login required for ${site}. Connect once and retry.`
+        message: `No saved session for ${site}. Connect once under Settings or when prompted, then retry.`
       }
     };
   }
@@ -83,32 +181,6 @@ async function verifyAuthenticatedSession({ userId, site, jobUrl }) {
   }
 }
 
-async function fillField(page, field) {
-  const selectors = [];
-  if (field.name) selectors.push(`[name="${field.name}"]`);
-  if (field.id) selectors.push(`#${field.id}`);
-  if (field.fieldIdentifier) selectors.push(`[name="${field.fieldIdentifier}"]`, `#${field.fieldIdentifier}`);
-
-  for (const selector of selectors) {
-    const locator = page.locator(selector).first();
-    if ((await locator.count()) === 0) continue;
-
-    try {
-      const tag = await locator.evaluate((el) => el.tagName.toLowerCase());
-      if (tag === "select") {
-        await locator.selectOption(String(field.value));
-      } else {
-        await locator.fill(String(field.value));
-      }
-      return true;
-    } catch {
-      // Continue trying other selectors.
-    }
-  }
-
-  return false;
-}
-
 async function trySubmit(page) {
   const candidates = [
     "button:has-text('Apply')",
@@ -122,9 +194,11 @@ async function trySubmit(page) {
     const locator = page.locator(selector).first();
     if ((await locator.count()) === 0) continue;
 
-    const disabled = await locator.evaluate((node) => {
-      return node.hasAttribute("disabled") || node.getAttribute("aria-disabled") === "true";
-    }).catch(() => false);
+    const disabled = await locator
+      .evaluate((node) => {
+        return node.hasAttribute("disabled") || node.getAttribute("aria-disabled") === "true";
+      })
+      .catch(() => false);
 
     if (disabled) continue;
 
@@ -138,7 +212,7 @@ async function trySubmit(page) {
 
 async function saveApplyScreenshot(page, { userId, site }) {
   const screenshotDir = path.resolve(__dirname, "../../data/apply-screenshots", String(userId));
-  await fs.mkdir(screenshotDir, { recursive: true });
+  await fs.promises.mkdir(screenshotDir, { recursive: true });
   const fileName = `${String(site).replace(/[^a-zA-Z0-9._-]/g, "_")}-${Date.now()}.png`;
   const absolutePath = path.join(screenshotDir, fileName);
   await page.screenshot({ path: absolutePath, fullPage: true });
@@ -159,6 +233,12 @@ async function detectSubmissionSuccess(page) {
     confirmationText: "No clear submission confirmation detected."
   };
 }
+
+const CAPTCHA_USER_MESSAGE =
+  "A captcha appeared after the form was filled. Complete the challenge on the employer site (open the job URL in your browser), then submit the application yourself.";
+
+const TWO_FACTOR_USER_MESSAGE =
+  "Two-factor or a verification step was detected after filling the form. Finish verification on the employer site, then submit manually if needed.";
 
 function buildManualPrefillBundle(filledFields = []) {
   const usable = (filledFields || [])
@@ -185,39 +265,57 @@ function buildManualPrefillBundle(filledFields = []) {
   };
 }
 
-async function executeSubmitFlow({ page, filledFields }) {
-  const filledResults = [];
-  for (const field of filledFields || []) {
-    if (field.value === null || field.value === undefined || field.value === "") {
-      continue;
-    }
-    const filled = await fillField(page, field);
-    filledResults.push({ fieldIdentifier: field.fieldIdentifier, filled });
-  }
-
-  const requiredUnfilled = filledResults.filter((item) => !item.filled);
+async function trySubmitAndConfirm(page) {
   const clickedSubmit = await trySubmit(page);
-  const confirmation = clickedSubmit ? await detectSubmissionSuccess(page) : { success: false, confirmationText: "Submit action not found or disabled." };
-
-  return {
-    filledResults,
-    requiredUnfilled,
-    clickedSubmit,
-    confirmation
-  };
+  const confirmation = clickedSubmit
+    ? await detectSubmissionSuccess(page)
+    : { success: false, confirmationText: "Submit action not found or disabled." };
+  return { clickedSubmit, confirmation };
 }
 
-async function runApplyFlowWithPlaywright({ userId, site, jobUrl, filledFields = [], skipAuthVerification = false }) {
+function buildFieldFillSummaryFromAttempts(fillSummary) {
+  return (fillSummary?.attempts || []).map(({ fieldIdentifier, ok }) => ({
+    fieldIdentifier,
+    filled: ok
+  }));
+}
+
+/**
+ * Opens the job page, fills mapped fields, detects captcha / blockers, then attempts submit.
+ */
+async function runApplyFlowWithPlaywright({
+  userId,
+  site,
+  jobUrl,
+  filledFields = [],
+  skipAuthVerification = false,
+  allowWithoutSavedSession = false
+}) {
+  const sessionFile = getSessionFilePath({ userId, site });
+  const hasSessionFile = fs.existsSync(sessionFile);
   const browser = await chromium.launch({ headless: true });
   let context;
   try {
     if (skipAuthVerification) {
       context = await browser.newContext();
+    } else if (!hasSessionFile) {
+      if (!allowWithoutSavedSession) {
+        await markCredentialResult({ userId, site, success: false });
+        return {
+          applied: false,
+          blocker: {
+            type: "auth_required",
+            message: `No saved session for ${site}. Connect once under Settings or when prompted, then retry.`
+          },
+          fillSummary: { filledCount: 0, attempts: [] },
+          manualPrefill: buildManualPrefillBundle(filledFields)
+        };
+      }
+      context = await browser.newContext();
     } else {
       const verification = await verifyAuthenticatedSession({ userId, site, jobUrl });
       if (verification.blocker) {
         await markCredentialResult({ userId, site, success: false });
-        const manualPrefill = buildManualPrefillBundle(filledFields);
         return {
           applied: false,
           blocker: {
@@ -225,12 +323,12 @@ async function runApplyFlowWithPlaywright({ userId, site, jobUrl, filledFields =
             message: verification.blocker.message
           },
           failureReason: verification.blocker.message,
-          manualPrefill
+          manualPrefill: buildManualPrefillBundle(filledFields),
+          fillSummary: { filledCount: 0, attempts: [] }
         };
       }
       if (!verification.isAuthenticated) {
         await markCredentialResult({ userId, site, success: false });
-        const manualPrefill = buildManualPrefillBundle(filledFields);
         return {
           applied: false,
           blocker: {
@@ -238,41 +336,99 @@ async function runApplyFlowWithPlaywright({ userId, site, jobUrl, filledFields =
             message: "Still appears logged out on the job page."
           },
           failureReason: "not_authenticated",
-          manualPrefill
+          manualPrefill: buildManualPrefillBundle(filledFields),
+          fillSummary: { filledCount: 0, attempts: [] }
         };
       }
-      const sessionFile = getSessionFilePath({ userId, site });
       context = await browser.newContext({ storageState: sessionFile });
     }
 
     const page = await context.newPage();
     await page.goto(jobUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
 
-    const blocked = detectBlocker(await page.content());
-    if (blocked) {
+    const fillSummary = await fillFieldsOnPage(page, filledFields);
+    await new Promise((r) => setTimeout(r, 400));
+
+    const content = await page.content();
+    let blocker = detectBlocker(content);
+
+    if (blocker?.blockerType === "captcha") {
       await markCredentialResult({ userId, site, success: false });
       const manualPrefill = buildManualPrefillBundle(filledFields);
       return {
         applied: false,
         blocker: {
-          type: blocked.blockerType,
-          message: blocked.message
+          type: "captcha",
+          message: CAPTCHA_USER_MESSAGE
         },
-        failureReason: blocked.blockerType,
+        failureReason: blocker.blockerType,
+        fillSummary,
         manualPrefill,
         nextAction:
-          blocked.blockerType === "captcha"
-            ? "CAPTCHA detected. Open the job page, solve CAPTCHA manually, run manualPrefill.prefillScript in browser console, then submit."
-            : "Open the job page manually, run manualPrefill.prefillScript, and complete the remaining step."
+          "CAPTCHA detected. Open the job page, solve CAPTCHA manually, run manualPrefill.prefillScript in browser console, then submit."
       };
     }
 
-    let submission = await executeSubmitFlow({ page, filledFields });
+    if (blocker?.blockerType === "two_factor") {
+      await markCredentialResult({ userId, site, success: false });
+      return {
+        applied: false,
+        blocker: {
+          type: "two_factor",
+          message: TWO_FACTOR_USER_MESSAGE
+        },
+        failureReason: blocker.blockerType,
+        fillSummary,
+        manualPrefill: buildManualPrefillBundle(filledFields),
+        nextAction:
+          "Open the job page manually, run manualPrefill.prefillScript, and complete the remaining step."
+      };
+    }
+
+    if (blocker) {
+      await markCredentialResult({ userId, site, success: false });
+      const manualPrefill = buildManualPrefillBundle(filledFields);
+      return {
+        applied: false,
+        blocker: {
+          type: blocker.blockerType || "unknown",
+          message: blocker.message
+        },
+        failureReason: blocker.blockerType,
+        fillSummary,
+        manualPrefill,
+        nextAction:
+          "Open the job page manually, run manualPrefill.prefillScript, and complete the remaining step."
+      };
+    }
+
+    const isAuthenticated = isAuthenticatedHeuristic(page.url(), content);
+    if (hasSessionFile) {
+      await markSessionChecked({ userId, site, isAuthenticated });
+    }
+
+    if (!isAuthenticated) {
+      await markCredentialResult({ userId, site, success: false });
+      return {
+        applied: false,
+        blocker: {
+          type: "login_required",
+          message: "Still appears logged out on the job page after filling fields."
+        },
+        failureReason: "not_authenticated",
+        fillSummary,
+        manualPrefill: buildManualPrefillBundle(filledFields)
+      };
+    }
+
+    let submission = await trySubmitAndConfirm(page);
     if (!submission.confirmation.success) {
       await page.waitForTimeout(1000);
-      submission = await executeSubmitFlow({ page, filledFields });
+      submission = await trySubmitAndConfirm(page);
     }
     const screenshotPath = await saveApplyScreenshot(page, { userId, site });
+    const fieldFillSummary = buildFieldFillSummaryFromAttempts(fillSummary);
+    const requiredUnfilled = fieldFillSummary.filter((item) => !item.filled);
 
     if (submission.confirmation.success) {
       await markCredentialResult({ userId, site, success: true });
@@ -283,7 +439,8 @@ async function runApplyFlowWithPlaywright({ userId, site, jobUrl, filledFields =
         confirmationText: submission.confirmation.confirmationText,
         screenshotPath,
         failureReason: null,
-        fieldFillSummary: submission.filledResults
+        fieldFillSummary,
+        fillSummary
       };
     }
 
@@ -296,9 +453,13 @@ async function runApplyFlowWithPlaywright({ userId, site, jobUrl, filledFields =
       confirmationText: submission.confirmation.confirmationText,
       screenshotPath,
       failureReason: submission.clickedSubmit ? "confirmation_not_detected" : "submit_not_found_or_disabled",
-      fieldFillSummary: submission.filledResults,
-      unfilledFields: submission.requiredUnfilled,
-      manualPrefill
+      fieldFillSummary,
+      unfilledFields: requiredUnfilled,
+      manualPrefill,
+      fillSummary,
+      note: hasSessionFile
+        ? "Form fields filled where matched; submit attempted but confirmation not detected."
+        : "Form fields filled where matched (no saved employer login); submit attempted but confirmation not detected."
     };
   } catch (error) {
     await markCredentialResult({ userId, site, success: false }).catch(() => null);
@@ -310,7 +471,8 @@ async function runApplyFlowWithPlaywright({ userId, site, jobUrl, filledFields =
         message: error.message || "Apply flow failed"
       },
       failureReason: error.message || "apply_flow_error",
-      manualPrefill
+      manualPrefill,
+      fillSummary: { filledCount: 0, attempts: [] }
     };
   } finally {
     if (context) {

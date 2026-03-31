@@ -21,7 +21,7 @@ export async function POST(request) {
       }),
     });
 
-    const payload = await response.json();
+    const payload = await response.json().catch(() => ({}));
     return Response.json(payload, { status: response.status });
   } catch (error) {
     return Response.json(

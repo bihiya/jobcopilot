@@ -1,5 +1,9 @@
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/prisma";
+import {
+  databaseUnavailableMessage,
+  isDatabaseUnreachableError
+} from "@/lib/db-connection-error";
 import DashboardClient from "./dashboard/dashboard-client";
 import AppShell from "./shared/app-shell";
 import {
@@ -25,7 +29,7 @@ const highlights = [
   },
   {
     title: "One-click tracking",
-    description: "Keep pending, ready, and applied jobs in a single dashboard.",
+    description: "Keep pending, ready, applying, and applied jobs in a single dashboard.",
     icon: <RocketLaunchRoundedIcon color="primary" />
   },
   {
@@ -98,15 +102,26 @@ export default async function Page() {
     return <LandingPage />;
   }
 
-  const jobs = await prisma.job.findMany({
-    where: { userId: session.user.id },
-    orderBy: { createdAt: "desc" },
-    take: 200
-  });
+  let jobs = [];
+  let databaseError = null;
+
+  try {
+    jobs = await prisma.job.findMany({
+      where: { userId: session.user.id },
+      orderBy: { createdAt: "desc" },
+      take: 200
+    });
+  } catch (error) {
+    if (isDatabaseUnreachableError(error)) {
+      databaseError = databaseUnavailableMessage();
+    } else {
+      throw error;
+    }
+  }
 
   return (
     <AppShell title="Dashboard" subtitle={`Signed in as ${session.user.email}`}>
-      <DashboardClient initialJobs={jobs} />
+      <DashboardClient initialJobs={jobs} databaseError={databaseError} />
     </AppShell>
   );
 }
