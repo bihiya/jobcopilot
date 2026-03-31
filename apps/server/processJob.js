@@ -263,6 +263,51 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     }
   });
 
+  const effectiveFormFields =
+    Array.isArray(formFields) && formFields.length > 0
+      ? formFields
+      : pageAccess.parsedFields || [];
+  await audit("job_fields_parsed", "Resolved candidate form fields for mapping", {
+    providedByClient: Array.isArray(formFields) ? formFields.length : 0,
+    parsedFromPage: Array.isArray(pageAccess.parsedFields) ? pageAccess.parsedFields.length : 0,
+    effectiveCount: effectiveFormFields.length
+  });
+
+  let domainCredential = null;
+  if (!pageAccess.canApplyWithoutAuth) {
+    domainCredential = await ensureDomainCredential({
+      userId,
+      site,
+      email: profile.user?.email
+    });
+
+    await audit(
+      "domain_credentials",
+      domainCredential.createdNow
+        ? "Created domain credentials for site"
+        : "Reused existing domain credentials for site",
+      {
+        site,
+        username: domainCredential.username,
+        createdNow: domainCredential.createdNow
+      }
+    );
+  }
+
+  let authState = { authenticated: true };
+  if (!pageAccess.canApplyWithoutAuth && pageAccess.requiresLogin) {
+    authState = await canAutoApply({ userId, site });
+    await audit("auth_check", authState.authenticated ? "Site session authenticated" : "Site session missing or expired", {
+      site,
+      authenticated: authState.authenticated
+    });
+  } else {
+    await audit("auth_check", "Auth session check skipped (direct apply path)", {
+      site,
+      authenticated: true
+    });
+  }
+
   if (!authState.authenticated) {
     await setProcessStep({
       idempotencyKey,
