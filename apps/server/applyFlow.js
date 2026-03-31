@@ -83,7 +83,15 @@ async function verifyAuthenticatedSession({ userId, site, jobUrl }) {
 /**
  * Full auto-apply (form fill + submit) is not implemented yet; verify session on the job page first.
  */
-async function runApplyFlowWithPlaywright({ userId, site, jobUrl, filledFields: _filledFields }) {
+async function runApplyFlowWithPlaywright({ userId, site, jobUrl, filledFields: _filledFields, skipAuthVerification = false }) {
+  if (skipAuthVerification) {
+    return {
+      applied: false,
+      blocker: null,
+      note: "Direct apply appears available without login; form submit automation not implemented yet."
+    };
+  }
+
   const verification = await verifyAuthenticatedSession({ userId, site, jobUrl });
   if (verification.blocker) {
     return {
