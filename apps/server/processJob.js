@@ -3,6 +3,8 @@ const { appendJobAudit } = require("./jobAudit");
 const { mapFieldWithAI } = require("./mapper");
 const { canAutoApply } = require("./siteAuthSession");
 const { runApplyFlowWithPlaywright } = require("./applyFlow");
+const { analyzeJobPageAccess } = require("./jobPageAnalysis");
+const { ensureDomainCredential } = require("./domainCredentialStore");
 
 function normalizeSite(url) {
   try {
@@ -149,11 +151,63 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     }
   );
 
-  const authState = await canAutoApply({ userId, site });
-  await audit("auth_check", authState.authenticated ? "Site session authenticated" : "Site session missing or expired", {
+  const pageAccess = await analyzeJobPageAccess({ jobUrl });
+  await audit("job_page_analyzed", "Job page access analysis complete", {
     site,
-    authenticated: authState.authenticated
+    analyzed: pageAccess.analyzed,
+    fetchOk: pageAccess.fetchOk,
+    statusCode: pageAccess.statusCode,
+    requiresLogin: pageAccess.requiresLogin,
+    requiresSignup: pageAccess.requiresSignup,
+    canApplyWithoutAuth: pageAccess.canApplyWithoutAuth,
+    signals: pageAccess.signals,
+    error: pageAccess.error || null
   });
+
+  const effectiveFormFields =
+    Array.isArray(formFields) && formFields.length > 0
+      ? formFields
+      : pageAccess.parsedFields || [];
+  await audit("job_fields_parsed", "Resolved candidate form fields for mapping", {
+    providedByClient: Array.isArray(formFields) ? formFields.length : 0,
+    parsedFromPage: Array.isArray(pageAccess.parsedFields) ? pageAccess.parsedFields.length : 0,
+    effectiveCount: effectiveFormFields.length
+  });
+
+  let domainCredential = null;
+  if (!pageAccess.canApplyWithoutAuth) {
+    domainCredential = await ensureDomainCredential({
+      userId,
+      site,
+      email: profile.user?.email
+    });
+
+    await audit(
+      "domain_credentials",
+      domainCredential.createdNow
+        ? "Created domain credentials for site"
+        : "Reused existing domain credentials for site",
+      {
+        site,
+        username: domainCredential.username,
+        createdNow: domainCredential.createdNow
+      }
+    );
+  }
+
+  let authState = { authenticated: true };
+  if (!pageAccess.canApplyWithoutAuth && pageAccess.requiresLogin) {
+    authState = await canAutoApply({ userId, site });
+    await audit("auth_check", authState.authenticated ? "Site session authenticated" : "Site session missing or expired", {
+      site,
+      authenticated: authState.authenticated
+    });
+  } else {
+    await audit("auth_check", "Auth session check skipped (direct apply path)", {
+      site,
+      authenticated: true
+    });
+  }
 
   if (!authState.authenticated) {
     const blockedJob = await prisma.job.update({
@@ -173,6 +227,8 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
         site,
         message: `Login required for ${site}. Connect this site once to continue.`
       },
+      domainCredential,
+      pageAccess,
       filledFields: [],
       missingFields: [],
       reusedMappings: 0,
@@ -200,7 +256,7 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
   const missingFields = [];
   const createdMappings = [];
 
-  for (const field of formFields) {
+  for (const field of effectiveFormFields) {
     const fieldIdentifier =
       field.fieldIdentifier || field.id || field.name || field.label || "";
     const existingMapping = mappingByField.get(fieldIdentifier);
@@ -266,9 +322,9 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
 
   const status = missingFields.length > 0 ? "pending" : "ready";
   const matchScore =
-    formFields.length === 0
+    effectiveFormFields.length === 0
       ? 0
-      : Math.round((filledFields.length / formFields.length) * 100);
+      : Math.round((filledFields.length / effectiveFormFields.length) * 100);
 
   const updatedJob = await prisma.job.update({
     where: { id: job.id },
@@ -294,7 +350,8 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     userId,
     site,
     jobUrl,
-    filledFields
+    filledFields,
+    skipAuthVerification: pageAccess.canApplyWithoutAuth
   });
 
   if (applyResult?.blocker) {
@@ -310,6 +367,8 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       missingFields,
       reusedMappings: existingMappings.length,
       newMappingsSaved: createdMappings.length,
+      pageAccess,
+      domainCredential,
       processingSteps
     };
   }
@@ -329,6 +388,8 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       missingFields,
       reusedMappings: existingMappings.length,
       newMappingsSaved: createdMappings.length,
+      pageAccess,
+      domainCredential,
       processingSteps
     };
   }
@@ -347,6 +408,8 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     missingFields,
     reusedMappings: existingMappings.length,
     newMappingsSaved: createdMappings.length,
+    pageAccess,
+    domainCredential,
     processingSteps
   };
 }
