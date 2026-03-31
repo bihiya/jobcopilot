@@ -35,6 +35,7 @@ import DoneAllIcon from "@mui/icons-material/DoneAll";
 import WorkOutlineIcon from "@mui/icons-material/WorkOutline";
 import LoginIcon from "@mui/icons-material/Login";
 import HistoryIcon from "@mui/icons-material/History";
+import SmartToyIcon from "@mui/icons-material/SmartToy";
 import {
   clearToast,
   initializeDashboard,
@@ -73,6 +74,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
   const [checkingAuth, setCheckingAuth] = useState(false);
   const [connectingAuth, setConnectingAuth] = useState(false);
   const [processLog, setProcessLog] = useState([]);
+  const [captchaAssist, setCaptchaAssist] = useState(null);
   const [auditDialogJob, setAuditDialogJob] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
@@ -122,6 +124,14 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
         throw new Error(payload?.message || payload?.error || "Failed to process job.");
       }
 
+      if (Array.isArray(payload?.processingSteps)) {
+        setProcessLog(payload.processingSteps);
+      }
+
+      if (payload?.job) {
+        dispatch(upsertJob(payload.job));
+      }
+
       if (payload?.requiresAuth) {
         setAuthStatus({
           requiresAuth: true,
@@ -139,18 +149,30 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       }
 
       if (payload?.blocker) {
+        const isCaptchaRequired =
+          payload?.processState?.step === "CAPTCHA_REQUIRED" ||
+          payload?.blocker?.type === "captcha";
+        if (isCaptchaRequired) {
+          setCaptchaAssist({
+            jobUrl,
+            site: payload?.site || null,
+            nextAction:
+              payload?.applyResult?.nextAction ||
+              "Open the job page, solve CAPTCHA, then run prefill script before submit.",
+            prefillScript: payload?.applyResult?.manualPrefill?.prefillScript || "",
+            prefillFields: payload?.applyResult?.manualPrefill?.fields || []
+          });
+        }
         dispatch(
           setToast({
-            type: "error",
+            type: isCaptchaRequired ? "warning" : "error",
             message: `${payload.blocker.type || "blocked"}: ${payload.blocker.message || ""}`
           })
         );
         return;
       }
 
-      if (payload?.job) {
-        dispatch(upsertJob(payload.job));
-      }
+      setCaptchaAssist(null);
       setJobUrlInput("");
       dispatch(setToast({ type: "success", message: "Job processed successfully." }));
     } catch (error) {
@@ -398,6 +420,66 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
                   </Button>
                   <Button variant="contained" onClick={onCheckLoginStatus} disabled={checkingAuth}>
                     {checkingAuth ? "Checking..." : "Check Login Status"}
+                  </Button>
+                </Stack>
+              </Stack>
+            </Alert>
+          ) : null}
+
+          {captchaAssist ? (
+            <Alert severity="warning" icon={<SmartToyIcon />} sx={{ mt: 1 }}>
+              <Stack spacing={1}>
+                <Typography variant="body2" fontWeight={700}>
+                  CAPTCHA Required → Resume Application
+                </Typography>
+                <Typography variant="body2">
+                  {captchaAssist.nextAction}
+                </Typography>
+                {captchaAssist.prefillFields?.length ? (
+                  <Typography variant="caption" color="text.secondary">
+                    Prefill bundle ready for {captchaAssist.prefillFields.length} fields.
+                  </Typography>
+                ) : null}
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                  <Button
+                    variant="contained"
+                    onClick={() => {
+                      if (captchaAssist?.jobUrl) {
+                        window.open(captchaAssist.jobUrl, "_blank", "noopener,noreferrer");
+                      }
+                    }}
+                  >
+                    Open Job & Solve CAPTCHA
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    disabled={!captchaAssist.prefillScript}
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(captchaAssist.prefillScript);
+                        dispatch(
+                          setToast({
+                            type: "success",
+                            message: "Prefill script copied. Paste it in browser console on the job page."
+                          })
+                        );
+                      } catch {
+                        dispatch(
+                          setToast({
+                            type: "warning",
+                            message: "Could not copy automatically. Open audit/process response and copy script manually."
+                          })
+                        );
+                      }
+                    }}
+                  >
+                    Copy Prefill Script
+                  </Button>
+                  <Button
+                    variant="text"
+                    onClick={() => setCaptchaAssist(null)}
+                  >
+                    Dismiss
                   </Button>
                 </Stack>
               </Stack>

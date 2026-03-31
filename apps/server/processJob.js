@@ -3,6 +3,15 @@ const { appendJobAudit } = require("./jobAudit");
 const { mapFieldWithAI } = require("./mapper");
 const { canAutoApply } = require("./siteAuthSession");
 const { runApplyFlowWithPlaywright } = require("./applyFlow");
+const { analyzeJobPageAccess } = require("./jobPageAnalysis");
+const { ensureDomainCredential } = require("./domainCredentialStore");
+const {
+  makeIdempotencyKey,
+  getProcessState,
+  initializeProcessState,
+  setProcessStep,
+  markProcessFailure
+} = require("./processStateStore");
 
 function normalizeSite(url) {
   try {
@@ -83,6 +92,26 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     throw new Error("userId is required");
   }
 
+  const idempotencyKey = makeIdempotencyKey({ userId, jobUrl });
+  const existingState = await getProcessState({ idempotencyKey });
+  if (
+    existingState?.jobId &&
+    (existingState?.step === "SUBMITTED" || existingState?.step === "COMPLETED")
+  ) {
+    const previousJob = await prisma.job.findUnique({
+      where: { id: existingState.jobId }
+    });
+    if (previousJob) {
+      return {
+        job: previousJob,
+        site: normalizeSite(jobUrl),
+        resumed: true,
+        idempotencyKey,
+        processState: existingState
+      };
+    }
+  }
+
   const site = normalizeSite(jobUrl);
 
   const profileInclude = {
@@ -120,6 +149,7 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       status: "pending"
     }
   });
+  await initializeProcessState({ idempotencyKey, userId, jobUrl, jobId: job.id });
 
   const processingSteps = [];
 
@@ -149,13 +179,98 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     }
   );
 
-  const authState = await canAutoApply({ userId, site });
-  await audit("auth_check", authState.authenticated ? "Site session authenticated" : "Site session missing or expired", {
+  const pageAccess = await analyzeJobPageAccess({ jobUrl });
+  await setProcessStep({
+    idempotencyKey,
+    step: "ANALYZED",
+    meta: {
+      analyzer: pageAccess.analyzer,
+      signals: pageAccess.signals,
+      fetchOk: pageAccess.fetchOk
+    }
+  });
+  await audit("job_page_analyzed", "Job page access analysis complete", {
     site,
-    authenticated: authState.authenticated
+    analyzed: pageAccess.analyzed,
+    fetchOk: pageAccess.fetchOk,
+    statusCode: pageAccess.statusCode,
+    requiresLogin: pageAccess.requiresLogin,
+    requiresSignup: pageAccess.requiresSignup,
+    canApplyWithoutAuth: pageAccess.canApplyWithoutAuth,
+    signals: pageAccess.signals,
+    error: pageAccess.error || null
+  });
+
+  const effectiveFormFields =
+    Array.isArray(formFields) && formFields.length > 0
+      ? formFields
+      : pageAccess.parsedFields || [];
+  await audit("job_fields_parsed", "Resolved candidate form fields for mapping", {
+    providedByClient: Array.isArray(formFields) ? formFields.length : 0,
+    parsedFromPage: Array.isArray(pageAccess.parsedFields) ? pageAccess.parsedFields.length : 0,
+    effectiveCount: effectiveFormFields.length
+  });
+
+  let domainCredential = null;
+  if (!pageAccess.canApplyWithoutAuth) {
+    domainCredential = await ensureDomainCredential({
+      userId,
+      site,
+      email: profile.user?.email
+    });
+
+    await audit(
+      "domain_credentials",
+      domainCredential.createdNow
+        ? "Created domain credentials for site"
+        : "Reused existing domain credentials for site",
+      {
+        site,
+        username: domainCredential.username,
+        createdNow: domainCredential.createdNow
+      }
+    );
+    await setProcessStep({
+      idempotencyKey,
+      step: "CREDENTIAL_READY",
+      meta: {
+        site,
+        status: domainCredential.status,
+        failureCount: domainCredential.failureCount
+      }
+    });
+  }
+
+  let authState = { authenticated: true };
+  if (!pageAccess.canApplyWithoutAuth && pageAccess.requiresLogin) {
+    authState = await canAutoApply({ userId, site });
+    await audit("auth_check", authState.authenticated ? "Site session authenticated" : "Site session missing or expired", {
+      site,
+      authenticated: authState.authenticated
+    });
+  } else {
+    await audit("auth_check", "Auth session check skipped (direct apply path)", {
+      site,
+      authenticated: true
+    });
+  }
+  await setProcessStep({
+    idempotencyKey,
+    step: "AUTH_READY",
+    meta: {
+      authenticated: authState.authenticated,
+      requiresLogin: pageAccess.requiresLogin
+    }
   });
 
   if (!authState.authenticated) {
+    await setProcessStep({
+      idempotencyKey,
+      step: "AUTH_REQUIRED",
+      meta: {
+        site
+      }
+    });
     const blockedJob = await prisma.job.update({
       where: { id: job.id },
       data: {
@@ -173,10 +288,16 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
         site,
         message: `Login required for ${site}. Connect this site once to continue.`
       },
+      domainCredential,
+      pageAccess,
       filledFields: [],
       missingFields: [],
       reusedMappings: 0,
       newMappingsSaved: 0,
+      idempotencyKey,
+      processState: {
+        step: "AUTH_REQUIRED"
+      },
       processingSteps
     };
   }
@@ -200,7 +321,7 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
   const missingFields = [];
   const createdMappings = [];
 
-  for (const field of formFields) {
+  for (const field of effectiveFormFields) {
     const fieldIdentifier =
       field.fieldIdentifier || field.id || field.name || field.label || "";
     const existingMapping = mappingByField.get(fieldIdentifier);
@@ -266,9 +387,9 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
 
   const status = missingFields.length > 0 ? "pending" : "ready";
   const matchScore =
-    formFields.length === 0
+    effectiveFormFields.length === 0
       ? 0
-      : Math.round((filledFields.length / formFields.length) * 100);
+      : Math.round((filledFields.length / effectiveFormFields.length) * 100);
 
   const updatedJob = await prisma.job.update({
     where: { id: job.id },
@@ -285,6 +406,15 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     jobStatus: status,
     matchScore
   });
+  await setProcessStep({
+    idempotencyKey,
+    step: "FORM_MAPPED",
+    meta: {
+      filled: filledFields.length,
+      missing: missingFields.length,
+      matchScore
+    }
+  });
 
   await audit("apply_flow_start", "Opening job page to verify session / apply", {
     filledFieldCount: filledFields.length
@@ -294,11 +424,30 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     userId,
     site,
     jobUrl,
-    filledFields
+    filledFields,
+    skipAuthVerification: pageAccess.canApplyWithoutAuth
   });
 
   if (applyResult?.blocker) {
-    await audit("apply_blocked", applyResult.blocker.message || "Apply flow blocked", {
+    const isCaptcha = applyResult.blocker.type === "captcha";
+    if (isCaptcha) {
+      await setProcessStep({
+        idempotencyKey,
+        step: "CAPTCHA_REQUIRED",
+        meta: {
+          message: applyResult.blocker.message || "Captcha challenge detected"
+        }
+      });
+    } else {
+      await markProcessFailure({
+        idempotencyKey,
+        error: applyResult.blocker.message || "Apply blocked"
+      });
+    }
+    const blockedMessage = applyResult?.manualPrefill?.fields?.length
+      ? `${applyResult.blocker.message} Manual prefill bundle generated.`
+      : applyResult.blocker.message || "Apply flow blocked";
+    await audit("apply_blocked", blockedMessage, {
       type: applyResult.blocker.type
     });
     return {
@@ -306,10 +455,17 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
       site,
       requiresAuth: false,
       blocker: applyResult.blocker,
+      applyResult,
       filledFields,
       missingFields,
       reusedMappings: existingMappings.length,
       newMappingsSaved: createdMappings.length,
+      pageAccess,
+      domainCredential,
+      idempotencyKey,
+      processState: {
+        step: isCaptcha ? "CAPTCHA_REQUIRED" : "FAILED"
+      },
       processingSteps
     };
   }
@@ -321,14 +477,32 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     });
 
     await audit("applied", "Marked as applied after automated flow", {});
+    await setProcessStep({
+      idempotencyKey,
+      step: "COMPLETED",
+      meta: {
+        jobId: appliedJob.id,
+        submittedAt: applyResult.submittedAt || new Date().toISOString()
+      }
+    });
+    await audit("completed", "Application process completed automatically", {
+      jobId: appliedJob.id
+    });
     return {
       job: appliedJob,
       site,
       requiresAuth: false,
+      applyResult,
       filledFields,
       missingFields,
       reusedMappings: existingMappings.length,
       newMappingsSaved: createdMappings.length,
+      pageAccess,
+      domainCredential,
+      idempotencyKey,
+      processState: {
+        step: "COMPLETED"
+      },
       processingSteps
     };
   }
@@ -343,10 +517,17 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     job: updatedJob,
     site,
     requiresAuth: false,
+    applyResult,
     filledFields,
     missingFields,
     reusedMappings: existingMappings.length,
     newMappingsSaved: createdMappings.length,
+    pageAccess,
+    domainCredential,
+    idempotencyKey,
+    processState: {
+      step: "APPLY_ATTEMPTED"
+    },
     processingSteps
   };
 }
