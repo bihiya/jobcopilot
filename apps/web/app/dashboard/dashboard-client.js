@@ -4,6 +4,9 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { io } from "socket.io-client";
 import { useDispatch, useSelector } from "react-redux";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -25,15 +28,10 @@ import {
   Paper,
   Select,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
   TextField,
   Typography
 } from "@mui/material";
+import { DataGrid } from "@mui/x-data-grid";
 import DoneAllIcon from "@mui/icons-material/DoneAll";
 import WorkOutlineIcon from "@mui/icons-material/WorkOutline";
 import LoginIcon from "@mui/icons-material/Login";
@@ -42,6 +40,7 @@ import SmartToyIcon from "@mui/icons-material/SmartToy";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import ShareOutlinedIcon from "@mui/icons-material/ShareOutlined";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
   clearToast,
   initializeDashboard,
@@ -97,6 +96,33 @@ function mergeAuditByTime(prev, next) {
   return Array.from(byId.values()).sort(
     (a, b) => new Date(a.at || 0).getTime() - new Date(b.at || 0).getTime()
   );
+}
+
+function renderAuditMeta(row) {
+  if (!row?.meta || typeof row.meta !== "object") return null;
+  const meta = row.meta;
+  const parts = [];
+  if (meta.parsedFieldCount != null) parts.push(`Fields detected on screen: ${meta.parsedFieldCount}`);
+  if (meta.buttonCount != null || meta.count != null) {
+    parts.push(`Buttons/controls detected: ${meta.buttonCount ?? meta.count}`);
+  }
+  if (meta.framesSampled != null) parts.push(`Frames sampled: ${meta.framesSampled}`);
+  if (meta.summary) parts.push(`OpenAI recommendation summary: ${meta.summary}`);
+  if (Array.isArray(meta.steps) && meta.steps.length) {
+    parts.push(`Suggested next steps:\n${meta.steps.map((step, idx) => `${idx + 1}. ${step}`).join("\n")}`);
+  }
+  if (Array.isArray(meta.fieldLabelsSample) && meta.fieldLabelsSample.length) {
+    parts.push(`Field labels sample: ${meta.fieldLabelsSample.join(", ")}`);
+  }
+  if (Array.isArray(meta.buttons) && meta.buttons.length) {
+    parts.push(
+      `Visible controls sample:\n${meta.buttons
+        .slice(0, 15)
+        .map((btn, idx) => `${idx + 1}. ${btn.text || btn.ariaLabel || btn.tag || "(unnamed control)"}`)
+        .join("\n")}`
+    );
+  }
+  return parts.length ? parts.join("\n\n") : JSON.stringify(meta, null, 2);
 }
 
 export default function DashboardClient({ initialJobs, initialFilter, initialPage, databaseError }) {
@@ -188,10 +214,98 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
     return jobs.filter((job) => job.status === activeFilter);
   }, [jobs, activeFilter]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredJobs.length / pageSize));
-  const currentPage = Math.min(page, totalPages);
-  const start = (currentPage - 1) * pageSize;
-  const paginatedJobs = filteredJobs.slice(start, start + pageSize);
+  const currentPage = Math.max(1, page);
+  const jobColumns = useMemo(
+    () => [
+      {
+        field: "url",
+        headerName: "URL",
+        flex: 1,
+        minWidth: 260,
+        renderCell: (params) => (
+          <a href={params.row.url} target="_blank" rel="noreferrer" style={{ color: "#1565c0" }}>
+            {params.row.url}
+          </a>
+        )
+      },
+      {
+        field: "status",
+        headerName: "Status",
+        minWidth: 140,
+        renderCell: (params) => (
+          <Chip
+            label={statusLabel(params.row.status)}
+            size="small"
+            color={statusColor(params.row.status)}
+            sx={{ textTransform: "none", color: "white", mt: 1 }}
+          />
+        )
+      },
+      {
+        field: "matchScore",
+        headerName: "Match score",
+        minWidth: 120,
+        valueGetter: (_, row) =>
+          row.matchScore == null && (row.status === "processing" || isLocalJobId(row.id))
+            ? "—"
+            : `${row.matchScore ?? 0}%`
+      },
+      {
+        field: "createdAt",
+        headerName: "Created",
+        minWidth: 170,
+        valueGetter: (_, row) => new Date(row.createdAt).toLocaleString()
+      },
+      {
+        field: "actions",
+        headerName: "Actions",
+        minWidth: 320,
+        sortable: false,
+        filterable: false,
+        renderCell: (params) => (
+          <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" sx={{ mt: 0.5 }}>
+            <Button variant="text" size="small" startIcon={<HistoryIcon />} onClick={() => openAuditDialog(params.row)}>
+              Audit log
+            </Button>
+            <Button
+              variant="text"
+              size="small"
+              color="error"
+              startIcon={<DeleteOutlineIcon />}
+              disabled={deletingJobId === params.row.id}
+              onClick={() => onDeleteJob(params.row)}
+            >
+              {deletingJobId === params.row.id ? "Deleting…" : "Delete"}
+            </Button>
+            {params.row.status === "applied" ? (
+              <Typography variant="body2" color="text.secondary" sx={{ alignSelf: "center", px: 1 }}>
+                Applied
+              </Typography>
+            ) : params.row.status === "applying" ||
+              params.row.status === "processing" ||
+              isLocalJobId(params.row.id) ? (
+              <Typography variant="body2" color="text.secondary" sx={{ alignSelf: "center", px: 1 }}>
+                {params.row.status === "processing" || isLocalJobId(params.row.id)
+                  ? "Processing…"
+                  : "Applying…"}
+              </Typography>
+            ) : (
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<DoneAllIcon />}
+                onClick={() => onMarkApplied(params.row.id)}
+                disabled={markingJobId === params.row.id}
+              >
+                {markingJobId === params.row.id ? "Saving..." : "Mark applied"}
+              </Button>
+            )}
+          </Stack>
+        )
+      }
+    ],
+    [deletingJobId, markingJobId, openAuditDialog]
+  );
 
   function closeAuditDialog() {
     setAuditDialogJob(null);
@@ -903,111 +1017,24 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
           })}
         </Stack>
 
-        {paginatedJobs.length === 0 ? (
+        {filteredJobs.length === 0 ? (
           <Typography color="text.secondary">No jobs found for this filter.</Typography>
         ) : (
-          <TableContainer sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell>URL</TableCell>
-                  <TableCell>Status</TableCell>
-                  <TableCell>Match score</TableCell>
-                  <TableCell>Created</TableCell>
-                  <TableCell align="right">Actions</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {paginatedJobs.map((job) => (
-                  <TableRow key={job.id} hover>
-                    <TableCell sx={{ maxWidth: 360 }}>
-                      <a href={job.url} target="_blank" rel="noreferrer" style={{ color: "#1565c0" }}>
-                        {job.url}
-                      </a>
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={statusLabel(job.status)}
-                        size="small"
-                        color={statusColor(job.status)}
-                        sx={{ textTransform: "none", color: "white" }}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      {job.matchScore == null && (job.status === "processing" || isLocalJobId(job.id))
-                        ? "—"
-                        : `${job.matchScore ?? 0}%`}
-                    </TableCell>
-                    <TableCell>{new Date(job.createdAt).toLocaleString()}</TableCell>
-                    <TableCell align="right">
-                      <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap">
-                        <Button
-                          variant="text"
-                          size="small"
-                          startIcon={<HistoryIcon />}
-                          onClick={() => openAuditDialog(job)}
-                        >
-                          Audit log
-                        </Button>
-                        <Button
-                          variant="text"
-                          size="small"
-                          color="error"
-                          startIcon={<DeleteOutlineIcon />}
-                          disabled={deletingJobId === job.id}
-                          onClick={() => onDeleteJob(job)}
-                        >
-                          {deletingJobId === job.id ? "Deleting…" : "Delete"}
-                        </Button>
-                        {job.status === "applied" ? (
-                          <Typography variant="body2" color="text.secondary" sx={{ alignSelf: "center", px: 1 }}>
-                            Applied
-                          </Typography>
-                        ) : job.status === "applying" || job.status === "processing" || isLocalJobId(job.id) ? (
-                          <Typography variant="body2" color="text.secondary" sx={{ alignSelf: "center", px: 1 }}>
-                            {job.status === "processing" || isLocalJobId(job.id) ? "Processing…" : "Applying…"}
-                          </Typography>
-                        ) : (
-                          <Button
-                            variant="outlined"
-                            size="small"
-                            startIcon={<DoneAllIcon />}
-                            onClick={() => onMarkApplied(job.id)}
-                            disabled={markingJobId === job.id}
-                          >
-                            {markingJobId === job.id ? "Saving..." : "Mark applied"}
-                          </Button>
-                        )}
-                      </Stack>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
+          <Box sx={{ height: 520 }}>
+            <DataGrid
+              rows={filteredJobs}
+              columns={jobColumns}
+              pageSizeOptions={PAGE_SIZE_OPTIONS}
+              pagination
+              paginationModel={{ page: currentPage - 1, pageSize }}
+              onPaginationModelChange={(model) => {
+                dispatch(setPage(model.page + 1));
+                dispatch(setPageSize(model.pageSize));
+              }}
+              disableRowSelectionOnClick
+            />
+          </Box>
         )}
-
-        <Stack direction="row" alignItems="center" spacing={1.5} mt={2}>
-          <Button
-            variant="outlined"
-            size="small"
-            disabled={currentPage <= 1}
-            onClick={() => dispatch(setPage(Math.max(1, currentPage - 1)))}
-          >
-            Previous
-          </Button>
-          <Typography variant="body2" color="text.secondary">
-            Page {currentPage} of {totalPages}
-          </Typography>
-          <Button
-            variant="outlined"
-            size="small"
-            disabled={currentPage >= totalPages}
-            onClick={() => dispatch(setPage(Math.min(totalPages, currentPage + 1)))}
-          >
-            Next
-          </Button>
-        </Stack>
       </Paper>
 
       <Dialog
@@ -1038,62 +1065,32 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
             <List dense>
               {auditLogs.map((row) => (
                 <ListItem key={row.id} alignItems="flex-start" disableGutters>
-                  <ListItemText
-                    primary={
-                      <Typography variant="body2" fontWeight={600}>
-                        {row.step}
+                  <Accordion disableGutters sx={{ width: "100%" }}>
+                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                      <ListItemText
+                        primary={
+                          <Typography variant="body2" fontWeight={700}>
+                            {row.step}
+                          </Typography>
+                        }
+                        secondary={
+                          <>
+                            <Typography variant="body2" color="text.secondary">
+                              {row.message}
+                            </Typography>
+                            <Typography variant="caption" color="text.disabled">
+                              {row.at ? new Date(row.at).toLocaleString() : ""}
+                            </Typography>
+                          </>
+                        }
+                      />
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>
+                        {renderAuditMeta(row) || "No additional details captured for this step."}
                       </Typography>
-                    }
-                    secondary={
-                      <>
-                        <Typography variant="body2" color="text.secondary">
-                          {row.message}
-                        </Typography>
-                        {row.step === "job_page_analyzed" && row.meta?.aiAnalyzerSummary ? (
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            display="block"
-                            sx={{ mt: 0.5, whiteSpace: "pre-wrap" }}
-                          >
-                            {String(row.meta.aiAnalyzerSummary).length > 280
-                              ? `${String(row.meta.aiAnalyzerSummary).slice(0, 280)}…`
-                              : row.meta.aiAnalyzerSummary}
-                          </Typography>
-                        ) : null}
-                        {row.step === "page_buttons_inventory" && row.meta?.count != null ? (
-                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                            {row.meta.count} control(s)
-                            {row.meta.framesSampled != null ? ` · ${row.meta.framesSampled} frame(s)` : ""}
-                          </Typography>
-                        ) : null}
-                        {row.step === "ai_apply_strategy" && row.meta?.summary ? (
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            display="block"
-                            sx={{ mt: 0.5, whiteSpace: "pre-wrap" }}
-                          >
-                            {row.meta.usedOpenAI ? "OpenAI · " : "Heuristic · "}
-                            {String(row.meta.summary).length > 320
-                              ? `${String(row.meta.summary).slice(0, 320)}…`
-                              : row.meta.summary}
-                          </Typography>
-                        ) : null}
-                        {row.step === "fields_mapped" &&
-                        row.meta &&
-                        (row.meta.filled != null || row.meta.matchScore != null) ? (
-                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
-                            Filled {row.meta.filled ?? "—"} · Missing {row.meta.missing ?? "—"} · Score{" "}
-                            {row.meta.matchScore != null ? `${row.meta.matchScore}%` : "—"}
-                          </Typography>
-                        ) : null}
-                        <Typography variant="caption" color="text.disabled">
-                          {row.at ? new Date(row.at).toLocaleString() : ""}
-                        </Typography>
-                      </>
-                    }
-                  />
+                    </AccordionDetails>
+                  </Accordion>
                 </ListItem>
               ))}
             </List>

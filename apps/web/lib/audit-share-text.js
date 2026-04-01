@@ -96,6 +96,48 @@ export function buildAuditShareText({ jobUrl, site, auditRows }) {
       )
     : "";
 
+  const buttonsSection = buttonsInv
+    ? lines(
+        "VISIBLE SCREEN CONTROLS",
+        "—",
+        `  • Total buttons/controls seen: ${buttonsInv.count ?? "?"}`,
+        buttonsInv.framesSampled != null ? `  • Frames sampled: ${buttonsInv.framesSampled}` : null,
+        Array.isArray(buttonsInv.buttons) && buttonsInv.buttons.length
+          ? lines(
+              "",
+              "Control sample:",
+              buttonsInv.buttons
+                .slice(0, 20)
+                .map((b, idx) => `  ${idx + 1}. ${b.text || b.ariaLabel || b.tag || "(unnamed control)"}`)
+                .join("\n")
+            )
+          : null,
+        ""
+      )
+    : "";
+
+  const strategySection = aiStrategy
+    ? lines(
+        "OPENAI NEXT ACTION GUIDANCE",
+        "—",
+        aiStrategy.summary ? `Summary: ${aiStrategy.summary}` : "Summary unavailable.",
+        Array.isArray(aiStrategy.steps) && aiStrategy.steps.length
+          ? lines(
+              "",
+              "Recommended steps:",
+              aiStrategy.steps.map((step, idx) => `  ${idx + 1}. ${step}`).join("\n")
+            )
+          : null,
+        aiStrategy.primaryApplyAction ? `Primary action: ${aiStrategy.primaryApplyAction}` : null,
+        ""
+      )
+    : lines(
+        "OPENAI NEXT ACTION GUIDANCE",
+        "—",
+        "No ai_apply_strategy entry found in this run.",
+        ""
+      );
+
   const mappingSection = mapped
     ? lines(
         "AI / PROFILE MAPPING",
