@@ -5,6 +5,7 @@ const { canAutoApply } = require("./siteAuthSession");
 const { runApplyFlowWithPlaywright } = require("./applyFlow");
 const { analyzeJobPageAccess } = require("./jobPageAnalysis");
 const { ensureDomainCredential } = require("./domainCredentialStore");
+const { suggestApplyStrategy } = require("./applyStrategyAI");
 const {
   makeIdempotencyKey,
   getProcessState,
@@ -20,6 +21,54 @@ function normalizeSite(url) {
   } catch {
     return "unknown";
   }
+}
+
+function fieldLabelsSample(parsedFields, limit = 18) {
+  if (!Array.isArray(parsedFields)) return [];
+  return parsedFields
+    .slice(0, limit)
+    .map((f) => String(f.label || f.fieldIdentifier || f.name || f.id || "").trim())
+    .filter(Boolean);
+}
+
+/** Human-readable summary for audit share / meta (what the analyzer inferred from the page). */
+function buildAnalyzerNarrative(pageAccess) {
+  const analyzer = pageAccess.analyzer || "unknown";
+  const engine =
+    analyzer === "playwright"
+      ? "Playwright (live DOM)"
+      : analyzer === "http_fallback"
+        ? "HTTP fallback (static HTML)"
+        : String(analyzer);
+  const sel = pageAccess.selectors || {};
+  const uiBits = [];
+  if (sel.hasAuthForm) uiBits.push("login/sign-in form visible");
+  if (sel.oauthButtons > 0) uiBits.push(`${sel.oauthButtons} OAuth-style control(s)`);
+  if (sel.hasDisabledApplyButton) uiBits.push("apply/submit control looks disabled");
+  const n = Array.isArray(pageAccess.parsedFields) ? pageAccess.parsedFields.length : 0;
+  const nb =
+    Array.isArray(pageAccess.buttons) ? pageAccess.buttons.length : pageAccess.buttonCount ?? 0;
+  const fs = pageAccess.framesSampled != null ? ` (${pageAccess.framesSampled} frame(s) scanned)` : "";
+  const accessLine = pageAccess.canApplyWithoutAuth
+    ? "Inference: can likely apply without a prior employer login (public or one-click apply path)."
+    : pageAccess.requiresLogin
+      ? "Inference: employer login likely required before applying."
+      : pageAccess.requiresSignup
+        ? "Inference: account creation may be required."
+        : "Inference: access pattern mixed or unclear—review the posting.";
+  const sigLine =
+    Array.isArray(pageAccess.signals) && pageAccess.signals.length
+      ? `Signal hits: ${pageAccess.signals.map((s) => `${s.key}×${s.count}`).join(", ")}.`
+      : "No strong keyword signals in page text.";
+  return [
+    `Analyzer engine: ${engine}.`,
+    `Scanned ~${n} apply-form field(s) and ~${nb} button/link control(s)${fs}.`,
+    uiBits.length ? `UI/controls: ${uiBits.join("; ")}.` : null,
+    sigLine,
+    accessLine
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function getValueFromProfile(profile, mappedTo) {
@@ -103,7 +152,7 @@ async function saveNewMapping({ userId, site, fieldIdentifier, mappedTo, confide
   });
 }
 
-async function processJob({ userId, jobUrl, formFields = [] }) {
+async function prepareProcessJob({ userId, jobUrl, formFields = [] }) {
   if (!userId) {
     throw new Error("userId is required");
   }
@@ -119,16 +168,22 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     });
     if (previousJob) {
       return {
+        resumed: true,
         job: previousJob,
         site: normalizeSite(jobUrl),
-        resumed: true,
+        jobUrl: previousJob.url || jobUrl,
         idempotencyKey,
         processState: existingState
       };
     }
   }
 
-  const site = normalizeSite(jobUrl);
+  const trimmedJobUrl = typeof jobUrl === "string" ? jobUrl.trim() : "";
+  if (!trimmedJobUrl) {
+    throw new Error("jobUrl is required");
+  }
+
+  const site = normalizeSite(trimmedJobUrl);
 
   const profileInclude = {
     user: {
@@ -161,11 +216,31 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
   const job = await prisma.job.create({
     data: {
       userId,
-      url: jobUrl,
+      url: trimmedJobUrl,
       status: "pending"
     }
   });
-  await initializeProcessState({ idempotencyKey, userId, jobUrl, jobId: job.id });
+  await initializeProcessState({ idempotencyKey, userId, jobUrl: trimmedJobUrl, jobId: job.id });
+
+  return {
+    resumed: false,
+    userId,
+    job,
+    profile,
+    site,
+    jobUrl: trimmedJobUrl,
+    formFields,
+    idempotencyKey
+  };
+}
+
+async function runProcessJobPipeline(ctx, options = {}) {
+  const { broadcastAudit } = options;
+  const { userId, job, profile, site, formFields, idempotencyKey } = ctx;
+  const jobUrl = ctx.jobUrl ?? job?.url;
+  if (!jobUrl) {
+    throw new Error("runProcessJobPipeline: jobUrl is missing from context and job.url");
+  }
 
   const processingSteps = [];
 
@@ -173,6 +248,19 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     try {
       const row = await appendJobAudit(prisma, { jobId: job.id, userId, step, message, meta });
       processingSteps.push(row);
+      if (row.id && broadcastAudit) {
+        broadcastAudit({
+          jobId: job.id,
+          userId,
+          entry: {
+            id: row.id,
+            step: row.step,
+            message: row.message,
+            meta: row.meta ?? null,
+            at: row.at
+          }
+        });
+      }
     } catch (err) {
       console.error("Job audit log failed:", err);
       processingSteps.push({
@@ -217,7 +305,47 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     requiresSignup: pageAccess.requiresSignup,
     canApplyWithoutAuth: pageAccess.canApplyWithoutAuth,
     signals: pageAccess.signals,
-    error: pageAccess.error || null
+    error: pageAccess.error || null,
+    analyzer: pageAccess.analyzer,
+    aiAnalyzerSummary: buildAnalyzerNarrative(pageAccess),
+    parsedFieldCount: Array.isArray(pageAccess.parsedFields) ? pageAccess.parsedFields.length : 0,
+    fieldLabelsSample: fieldLabelsSample(pageAccess.parsedFields, 18),
+    uiSelectors: pageAccess.selectors || null,
+    buttonCount: Array.isArray(pageAccess.buttons)
+      ? pageAccess.buttons.length
+      : pageAccess.buttonCount ?? 0,
+    framesSampled: pageAccess.framesSampled,
+    frameCount: pageAccess.frameCount
+  });
+
+  const pageButtons = Array.isArray(pageAccess.buttons) ? pageAccess.buttons : [];
+  await audit("page_buttons_inventory", `Captured ${pageButtons.length} clickable control(s) (main page + iframes)`, {
+    count: pageButtons.length,
+    framesSampled: pageAccess.framesSampled,
+    frameCount: pageAccess.frameCount,
+    buttons: pageButtons.slice(0, 45)
+  });
+
+  const applyPlan = await suggestApplyStrategy({
+    jobUrl,
+    site,
+    buttons: pageButtons,
+    fieldCount: Array.isArray(pageAccess.parsedFields) ? pageAccess.parsedFields.length : 0,
+    signals: pageAccess.signals
+  });
+
+  const strategyMsg =
+    applyPlan.summary && applyPlan.summary.length > 280
+      ? `${applyPlan.summary.slice(0, 277)}…`
+      : applyPlan.summary || "Apply strategy recorded.";
+
+  await audit("ai_apply_strategy", strategyMsg, {
+    usedOpenAI: applyPlan.usedOpenAI,
+    model: applyPlan.model || null,
+    summary: applyPlan.summary,
+    steps: applyPlan.steps,
+    primaryApplyAction: applyPlan.primaryApplyAction,
+    cautions: applyPlan.cautions
   });
 
   const authProbe = await canAutoApply({ userId, site, jobUrl });
@@ -445,7 +573,19 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
     missing: missingFields.length,
     newMappings: createdMappings.length,
     jobStatus: status,
-    matchScore
+    matchScore,
+    mappingSamples: filledFields.slice(0, 12).map((f) => ({
+      field: f.fieldIdentifier,
+      profileSlot: f.mappedTo,
+      confidence:
+        f.confidence != null && !Number.isNaN(Number(f.confidence))
+          ? Math.round(Number(f.confidence) * 100) / 100
+          : null
+    })),
+    missingSamples: missingFields.slice(0, 8).map((m) => ({
+      field: m.fieldIdentifier,
+      reason: m.reason
+    }))
   });
   await setProcessStep({
     idempotencyKey,
@@ -590,6 +730,22 @@ async function processJob({ userId, jobUrl, formFields = [] }) {
   };
 }
 
+async function processJob(body, options = {}) {
+  const prep = await prepareProcessJob(body);
+  if (prep.resumed) {
+    return {
+      job: prep.job,
+      site: prep.site,
+      resumed: true,
+      idempotencyKey: prep.idempotencyKey,
+      processState: prep.processState
+    };
+  }
+  return runProcessJobPipeline(prep, options);
+}
+
 module.exports = {
-  processJob
+  processJob,
+  prepareProcessJob,
+  runProcessJobPipeline
 };

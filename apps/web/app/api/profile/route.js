@@ -80,6 +80,17 @@ export async function POST(request) {
       resumeUrl: strOrNull(body.resumeUrl)
     };
 
+    if ("jobSearchPreferences" in body) {
+      if (body.jobSearchPreferences === null) {
+        data.jobSearchPreferences = null;
+      } else if (
+        typeof body.jobSearchPreferences === "object" &&
+        !Array.isArray(body.jobSearchPreferences)
+      ) {
+        data.jobSearchPreferences = body.jobSearchPreferences;
+      }
+    }
+
     const profile = await prisma.userProfile.upsert({
       where: { userId: session.user.id },
       update: data,

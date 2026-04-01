@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { io } from "socket.io-client";
 import { useDispatch, useSelector } from "react-redux";
 import {
   Alert,
@@ -8,10 +9,13 @@ import {
   Button,
   Chip,
   Collapse,
+  Checkbox,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   InputLabel,
   LinearProgress,
   List,
@@ -20,7 +24,6 @@ import {
   MenuItem,
   Paper,
   Select,
-  Snackbar,
   Stack,
   Table,
   TableBody,
@@ -37,6 +40,8 @@ import LoginIcon from "@mui/icons-material/Login";
 import HistoryIcon from "@mui/icons-material/History";
 import SmartToyIcon from "@mui/icons-material/SmartToy";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import ShareOutlinedIcon from "@mui/icons-material/ShareOutlined";
 import {
   clearToast,
   initializeDashboard,
@@ -50,6 +55,8 @@ import {
   upsertJob,
   removeJob
 } from "@/lib/store/dashboard-slice";
+import { buildPrefillBookmarkletHref } from "@/lib/prefill-bookmarklet";
+import { buildAuditShareText } from "@/lib/audit-share-text";
 
 const FILTERS = ["all", "processing", "pending", "auth_required", "ready", "applying", "applied"];
 const PAGE_SIZE_OPTIONS = [5, 10, 25];
@@ -79,13 +86,25 @@ function filterChipLabel(filter) {
   return filter.charAt(0).toUpperCase() + filter.slice(1);
 }
 
+function mergeAuditByTime(prev, next) {
+  const byId = new Map();
+  for (const r of prev || []) {
+    if (r?.id) byId.set(r.id, r);
+  }
+  for (const r of next || []) {
+    if (r?.id) byId.set(r.id, r);
+  }
+  return Array.from(byId.values()).sort(
+    (a, b) => new Date(a.at || 0).getTime() - new Date(b.at || 0).getTime()
+  );
+}
+
 export default function DashboardClient({ initialJobs, initialFilter, initialPage, databaseError }) {
   const dispatch = useDispatch();
   const {
     jobs,
     processing,
     markingJobId,
-    toast,
     filter: activeFilter,
     pageSize,
     page
@@ -99,6 +118,16 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
   const [auditDialogJob, setAuditDialogJob] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [prefillSessionKey, setPrefillSessionKey] = useState(null);
+  const [pageOrigin, setPageOrigin] = useState("");
+  const [advancedPrefillOpen, setAdvancedPrefillOpen] = useState(false);
+  const [captchaAcknowledged, setCaptchaAcknowledged] = useState(false);
+  const [deletingJobId, setDeletingJobId] = useState(null);
+  const auditDialogJobRef = useRef(null);
+  const liveAuditBufferRef = useRef(new Map());
+  const liveAuditCleanupRef = useRef(null);
+
+  auditDialogJobRef.current = auditDialogJob;
 
   useEffect(() => {
     dispatch(
@@ -110,6 +139,49 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       })
     );
   }, [dispatch, initialFilter, initialJobs, initialPage]);
+
+  useEffect(() => {
+    return () => {
+      liveAuditCleanupRef.current?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    setPageOrigin(typeof window !== "undefined" ? window.location.origin : "");
+  }, []);
+
+  useEffect(() => {
+    const script = captchaAssist?.prefillScript;
+    if (!script) {
+      setPrefillSessionKey(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/prefill/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ script })
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!cancelled && r.ok && data.key) {
+          setPrefillSessionKey(data.key);
+        } else if (!cancelled) {
+          setPrefillSessionKey(null);
+        }
+      } catch {
+        if (!cancelled) setPrefillSessionKey(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [captchaAssist?.prefillScript]);
+
+  useEffect(() => {
+    setCaptchaAcknowledged(false);
+  }, [captchaAssist]);
 
   const filteredJobs = useMemo(() => {
     if (activeFilter === "all") return jobs;
@@ -127,37 +199,200 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
     setAuditLoading(false);
   }
 
-  async function openAuditDialog(job) {
-    if (!job?.id) return;
-    setAuditDialogJob(job);
-    setAuditLogs([]);
+  const openAuditDialog = useCallback(
+    async (job) => {
+      if (!job?.id) return;
+      setAuditDialogJob(job);
 
-    if (isLocalJobId(job.id)) {
-      setAuditLoading(false);
+      const buffered = liveAuditBufferRef.current.get(job.id);
+      if (buffered?.length) {
+        setAuditLogs(buffered);
+      } else {
+        setAuditLogs([]);
+      }
+
+      if (isLocalJobId(job.id)) {
+        setAuditLoading(false);
+        return;
+      }
+
+      setAuditLoading(true);
+      try {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/audit`);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          dispatch(
+            setToast({
+              type: "error",
+              message: data?.error || "Failed to load audit log."
+            })
+          );
+          setAuditLogs([]);
+          return;
+        }
+        setAuditLogs((prev) => mergeAuditByTime(prev, data.logs || []));
+      } catch {
+        dispatch(setToast({ type: "error", message: "Failed to load audit log." }));
+        setAuditLogs([]);
+      } finally {
+        setAuditLoading(false);
+      }
+    },
+    [dispatch]
+  );
+
+  function stopLiveAudit() {
+    liveAuditCleanupRef.current?.();
+    liveAuditCleanupRef.current = null;
+  }
+
+  async function startLiveAuditForJob(jobId) {
+    stopLiveAudit();
+    try {
+      const tokenRes = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/audit/socket-token`, {
+        method: "POST"
+      });
+      const tokenPayload = await tokenRes.json().catch(() => ({}));
+      if (!tokenRes.ok || !tokenPayload.token) {
+        return;
+      }
+      const socketUrl = tokenPayload.socketUrl || "http://localhost:4000";
+      const socket = io(socketUrl, {
+        path: "/socket.io",
+        auth: { token: tokenPayload.token },
+        transports: ["websocket", "polling"]
+      });
+
+      const appendEntry = (entry) => {
+        if (!entry?.id) return;
+        const list = liveAuditBufferRef.current.get(jobId) || [];
+        if (list.some((e) => e.id === entry.id)) return;
+        list.push(entry);
+        liveAuditBufferRef.current.set(jobId, list);
+        if (auditDialogJobRef.current?.id === jobId) {
+          setAuditLogs([...list]);
+        }
+      };
+
+      socket.on("audit:entry", appendEntry);
+
+      const poll = async () => {
+        try {
+          const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/audit`);
+          const data = await r.json().catch(() => ({}));
+          if (r.ok && Array.isArray(data.logs)) {
+            const merged = mergeAuditByTime(liveAuditBufferRef.current.get(jobId) || [], data.logs);
+            liveAuditBufferRef.current.set(jobId, merged);
+            if (auditDialogJobRef.current?.id === jobId) {
+              setAuditLogs(merged);
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+
+      await poll();
+      const pollId = setInterval(poll, 2000);
+
+      liveAuditCleanupRef.current = () => {
+        socket.disconnect();
+        clearInterval(pollId);
+      };
+    } catch {
+      /* live audit is optional */
+    }
+  }
+
+  function handleProcessOutcome(payload, options = {}) {
+    const { replaceOptimisticWithJob } = options;
+    const jobUrl =
+      (typeof options.jobUrl === "string" && options.jobUrl.trim() !== ""
+        ? options.jobUrl
+        : null) ??
+      (typeof payload?.job?.url === "string" ? payload.job.url : "") ??
+      "";
+    if (payload?.error) {
+      replaceOptimisticWithJob(null);
+      dispatch(setToast({ type: "error", message: payload.message || "Process failed." }));
       return;
     }
 
-    setAuditLoading(true);
-    try {
-      const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/audit`);
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        dispatch(
-          setToast({
-            type: "error",
-            message: data?.error || "Failed to load audit log."
-          })
-        );
-        setAuditLogs([]);
-        return;
-      }
-      setAuditLogs(data.logs || []);
-    } catch {
-      dispatch(setToast({ type: "error", message: "Failed to load audit log." }));
-      setAuditLogs([]);
-    } finally {
-      setAuditLoading(false);
+    if (Array.isArray(payload?.processingSteps)) {
+      setProcessLog(payload.processingSteps);
     }
+
+    if (payload?.job) {
+      dispatch(upsertJob(payload.job));
+    }
+
+    if (payload?.requiresAuth) {
+      replaceOptimisticWithJob(payload.job ?? null);
+      setAuthStatus({
+        requiresAuth: true,
+        site: payload.site,
+        loginUrl: payload.loginUrl || null,
+        reason: payload.reason || "Session required"
+      });
+      dispatch(
+        setToast({
+          type: "warning",
+          message: `Employer login needed on ${payload.site}. Click Connect and sign in once in the Chromium window.`
+        })
+      );
+      return;
+    }
+
+    if (payload?.blocker) {
+      replaceOptimisticWithJob(payload.job ?? null);
+      const isCaptchaRequired =
+        payload?.processState?.step === "CAPTCHA_REQUIRED" ||
+        payload?.blocker?.type === "captcha";
+      if (isCaptchaRequired) {
+        setCaptchaAssist({
+          jobUrl,
+          site: payload?.site || null,
+          nextAction:
+            payload?.applyResult?.nextAction ||
+            "Use the CAPTCHA dialog: open the job page, complete the human check, then use the fill helper bookmark if needed.",
+          prefillScript: payload?.applyResult?.manualPrefill?.prefillScript || "",
+          prefillFields: payload?.applyResult?.manualPrefill?.fields || []
+        });
+      }
+      const b = payload.blocker;
+      const fs = payload.fillSummary;
+      const fillHint =
+        fs?.filledCount != null ? ` ${fs.filledCount} field(s) were filled in the browser.` : "";
+      const softBlock = b.type === "captcha" || b.type === "two_factor";
+      dispatch(
+        setToast({
+          type: softBlock ? "warning" : "error",
+          message: `${b.message || b.type || "Blocked"}${fillHint}`
+        })
+      );
+      return;
+    }
+
+    setCaptchaAssist(null);
+    if (payload?.job) {
+      replaceOptimisticWithJob(payload.job);
+    } else {
+      replaceOptimisticWithJob(null);
+    }
+    setJobUrlInput("");
+    const filled = payload?.fillSummary?.filledCount;
+    const note = payload?.applyNote;
+    dispatch(
+      setToast({
+        type: "success",
+        message:
+          filled != null && filled >= 0
+            ? `Job processed. ${filled} field(s) filled on the employer page.${note ? ` ${note}` : ""}`
+            : note
+              ? `Job processed. ${note}`
+              : "Job processed successfully."
+      })
+    );
   }
 
   async function onProcessJob(event) {
@@ -188,6 +423,7 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       if (job) dispatch(upsertJob(job));
     };
 
+    let processingAsync = false;
     try {
       const response = await fetch("/api/process", {
         method: "POST",
@@ -201,82 +437,60 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
         throw new Error(payload?.message || payload?.error || "Failed to process job.");
       }
 
-      if (Array.isArray(payload?.processingSteps)) {
-        setProcessLog(payload.processingSteps);
-      }
-
-      if (payload?.job) {
-        dispatch(upsertJob(payload.job));
-      }
-
-      if (payload?.requiresAuth) {
-        replaceOptimisticWithJob(payload.job ?? null);
-        setAuthStatus({
-          requiresAuth: true,
-          site: payload.site,
-          loginUrl: payload.loginUrl || null,
-          reason: payload.reason || "Session required"
-        });
-        dispatch(
-          setToast({
-            type: "warning",
-            message: `Employer login needed on ${payload.site}. Click Connect and sign in once in the Chromium window.`
-          })
-        );
+      if (payload.resumed) {
+        handleProcessOutcome(payload, { jobUrl, replaceOptimisticWithJob });
         return;
       }
 
-      if (payload?.blocker) {
-        replaceOptimisticWithJob(payload.job ?? null);
-        const isCaptchaRequired =
-          payload?.processState?.step === "CAPTCHA_REQUIRED" ||
-          payload?.blocker?.type === "captcha";
-        if (isCaptchaRequired) {
-          setCaptchaAssist({
-            jobUrl,
-            site: payload?.site || null,
-            nextAction:
-              payload?.applyResult?.nextAction ||
-              "Open the job page, solve CAPTCHA, then run prefill script before submit.",
-            prefillScript: payload?.applyResult?.manualPrefill?.prefillScript || "",
-            prefillFields: payload?.applyResult?.manualPrefill?.fields || []
-          });
+      if (response.status === 202 && payload?.processing && payload?.job?.id && payload?.idempotencyKey) {
+        processingAsync = true;
+        const { job, idempotencyKey } = payload;
+        replaceOptimisticWithJob(job);
+        dispatch(upsertJob(job));
+        if (
+          auditDialogJobRef.current &&
+          isLocalJobId(auditDialogJobRef.current.id) &&
+          auditDialogJobRef.current.url === jobUrl
+        ) {
+          setAuditDialogJob(job);
+          setAuditLogs(liveAuditBufferRef.current.get(job.id) || []);
+          setAuditLoading(false);
         }
-        const b = payload.blocker;
-        const fs = payload.fillSummary;
-        const fillHint =
-          fs?.filledCount != null ? ` ${fs.filledCount} field(s) were filled in the browser.` : "";
-        const softBlock = b.type === "captcha" || b.type === "two_factor";
-        dispatch(
-          setToast({
-            type: softBlock ? "warning" : "error",
-            message: `${b.message || b.type || "Blocked"}${fillHint}`
-          })
-        );
+        startLiveAuditForJob(job.id);
+
+        const pollOutcome = async () => {
+          const maxMs = 15 * 60 * 1000;
+          const start = Date.now();
+          try {
+            while (Date.now() - start < maxMs) {
+              await new Promise((r) => setTimeout(r, 1000));
+              const r = await fetch(
+                `/api/process/outcome?idempotencyKey=${encodeURIComponent(idempotencyKey)}`
+              );
+              const data = await r.json().catch(() => ({}));
+              if (data.pending) {
+                continue;
+              }
+              if (data.done && data.outcome) {
+                stopLiveAudit();
+                handleProcessOutcome(data.outcome, { jobUrl, replaceOptimisticWithJob });
+                return;
+              }
+            }
+            stopLiveAudit();
+            dispatch(setToast({ type: "error", message: "Job processing timed out." }));
+          } finally {
+            dispatch(setProcessing(false));
+          }
+        };
+
+        pollOutcome();
         return;
       }
 
-      setCaptchaAssist(null);
-      if (payload?.job) {
-        replaceOptimisticWithJob(payload.job);
-      } else {
-        replaceOptimisticWithJob(null);
-      }
-      setJobUrlInput("");
-      const filled = payload?.fillSummary?.filledCount;
-      const note = payload?.applyNote;
-      dispatch(
-        setToast({
-          type: "success",
-          message:
-            filled != null && filled >= 0
-              ? `Job processed. ${filled} field(s) filled on the employer page.${note ? ` ${note}` : ""}`
-              : note
-                ? `Job processed. ${note}`
-                : "Job processed successfully."
-        })
-      );
+      handleProcessOutcome(payload, { jobUrl, replaceOptimisticWithJob });
     } catch (error) {
+      stopLiveAudit();
       dispatch(removeJob(tempId));
       dispatch(
         setToast({
@@ -285,7 +499,9 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
         })
       );
     } finally {
-      dispatch(setProcessing(false));
+      if (!processingAsync) {
+        dispatch(setProcessing(false));
+      }
     }
   }
 
@@ -388,6 +604,53 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
       );
     } finally {
       setCheckingAuth(false);
+    }
+  }
+
+  async function onDeleteJob(job) {
+    if (!job?.id) return;
+    if (
+      !window.confirm(
+        `Delete this job from your list?\n\n${String(job.url || "").slice(0, 200)}${String(job.url || "").length > 200 ? "…" : ""}`
+      )
+    ) {
+      return;
+    }
+
+    if (isLocalJobId(job.id)) {
+      dispatch(removeJob(job.id));
+      liveAuditBufferRef.current.delete(job.id);
+      if (auditDialogJob?.id === job.id) {
+        closeAuditDialog();
+      }
+      dispatch(setToast({ type: "success", message: "Removed from list." }));
+      return;
+    }
+
+    setDeletingJobId(job.id);
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}`, {
+        method: "DELETE"
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.error || "Failed to delete job.");
+      }
+      dispatch(removeJob(job.id));
+      liveAuditBufferRef.current.delete(job.id);
+      if (auditDialogJob?.id === job.id) {
+        closeAuditDialog();
+      }
+      dispatch(setToast({ type: "success", message: "Job deleted." }));
+    } catch (error) {
+      dispatch(
+        setToast({
+          type: "error",
+          message: error?.message || "Could not delete job."
+        })
+      );
+    } finally {
+      setDeletingJobId(null);
     }
   }
 
@@ -574,65 +837,6 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
             </Alert>
           ) : null}
 
-          {captchaAssist ? (
-            <Alert severity="warning" icon={<SmartToyIcon />} sx={{ mt: 1 }}>
-              <Stack spacing={1}>
-                <Typography variant="body2" fontWeight={700}>
-                  CAPTCHA Required → Resume Application
-                </Typography>
-                <Typography variant="body2">
-                  {captchaAssist.nextAction}
-                </Typography>
-                {captchaAssist.prefillFields?.length ? (
-                  <Typography variant="caption" color="text.secondary">
-                    Prefill bundle ready for {captchaAssist.prefillFields.length} fields.
-                  </Typography>
-                ) : null}
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                  <Button
-                    variant="contained"
-                    onClick={() => {
-                      if (captchaAssist?.jobUrl) {
-                        window.open(captchaAssist.jobUrl, "_blank", "noopener,noreferrer");
-                      }
-                    }}
-                  >
-                    Open Job & Solve CAPTCHA
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    disabled={!captchaAssist.prefillScript}
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(captchaAssist.prefillScript);
-                        dispatch(
-                          setToast({
-                            type: "success",
-                            message: "Prefill script copied. Paste it in browser console on the job page."
-                          })
-                        );
-                      } catch {
-                        dispatch(
-                          setToast({
-                            type: "warning",
-                            message: "Could not copy automatically. Open audit/process response and copy script manually."
-                          })
-                        );
-                      }
-                    }}
-                  >
-                    Copy Prefill Script
-                  </Button>
-                  <Button
-                    variant="text"
-                    onClick={() => setCaptchaAssist(null)}
-                  >
-                    Dismiss
-                  </Button>
-                </Stack>
-              </Stack>
-            </Alert>
-          ) : null}
         </Stack>
       </Paper>
 
@@ -745,6 +949,16 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
                         >
                           Audit log
                         </Button>
+                        <Button
+                          variant="text"
+                          size="small"
+                          color="error"
+                          startIcon={<DeleteOutlineIcon />}
+                          disabled={deletingJobId === job.id}
+                          onClick={() => onDeleteJob(job)}
+                        >
+                          {deletingJobId === job.id ? "Deleting…" : "Delete"}
+                        </Button>
                         {job.status === "applied" ? (
                           <Typography variant="body2" color="text.secondary" sx={{ alignSelf: "center", px: 1 }}>
                             Applied
@@ -813,7 +1027,8 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
         <DialogContent dividers>
           {auditDialogJob && isLocalJobId(auditDialogJob.id) ? (
             <Typography color="text.secondary">
-              Audit log is available after this run finishes and the job is saved.
+              Saving the job… Live audit entries appear here as soon as the server assigns a job id (usually within a
+              second). You can close this dialog and reopen it from the table.
             </Typography>
           ) : auditLoading ? (
             <LinearProgress />
@@ -834,6 +1049,45 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
                         <Typography variant="body2" color="text.secondary">
                           {row.message}
                         </Typography>
+                        {row.step === "job_page_analyzed" && row.meta?.aiAnalyzerSummary ? (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            display="block"
+                            sx={{ mt: 0.5, whiteSpace: "pre-wrap" }}
+                          >
+                            {String(row.meta.aiAnalyzerSummary).length > 280
+                              ? `${String(row.meta.aiAnalyzerSummary).slice(0, 280)}…`
+                              : row.meta.aiAnalyzerSummary}
+                          </Typography>
+                        ) : null}
+                        {row.step === "page_buttons_inventory" && row.meta?.count != null ? (
+                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                            {row.meta.count} control(s)
+                            {row.meta.framesSampled != null ? ` · ${row.meta.framesSampled} frame(s)` : ""}
+                          </Typography>
+                        ) : null}
+                        {row.step === "ai_apply_strategy" && row.meta?.summary ? (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            display="block"
+                            sx={{ mt: 0.5, whiteSpace: "pre-wrap" }}
+                          >
+                            {row.meta.usedOpenAI ? "OpenAI · " : "Heuristic · "}
+                            {String(row.meta.summary).length > 320
+                              ? `${String(row.meta.summary).slice(0, 320)}…`
+                              : row.meta.summary}
+                          </Typography>
+                        ) : null}
+                        {row.step === "fields_mapped" &&
+                        row.meta &&
+                        (row.meta.filled != null || row.meta.matchScore != null) ? (
+                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                            Filled {row.meta.filled ?? "—"} · Missing {row.meta.missing ?? "—"} · Score{" "}
+                            {row.meta.matchScore != null ? `${row.meta.matchScore}%` : "—"}
+                          </Typography>
+                        ) : null}
                         <Typography variant="caption" color="text.disabled">
                           {row.at ? new Date(row.at).toLocaleString() : ""}
                         </Typography>
@@ -845,23 +1099,196 @@ export default function DashboardClient({ initialJobs, initialFilter, initialPag
             </List>
           )}
         </DialogContent>
+        <DialogActions sx={{ px: 3, py: 2, gap: 1, flexWrap: "wrap", justifyContent: "space-between" }}>
+          <Button
+            variant="contained"
+            startIcon={<ShareOutlinedIcon />}
+            disabled={!auditDialogJob?.url || auditLogs.length === 0}
+            onClick={async () => {
+              const text = buildAuditShareText({
+                jobUrl: auditDialogJob.url,
+                auditRows: auditLogs
+              });
+              try {
+                await navigator.clipboard.writeText(text);
+                dispatch(
+                  setToast({
+                    type: "success",
+                    message: "Share report copied — paste into Slack, email, or notes."
+                  })
+                );
+              } catch {
+                dispatch(
+                  setToast({
+                    type: "error",
+                    message: "Clipboard not available. Copy the audit lines manually."
+                  })
+                );
+              }
+            }}
+          >
+            Copy share report
+          </Button>
+          <Button variant="outlined" onClick={() => setAuditDialogJob(null)}>
+            Close
+          </Button>
+        </DialogActions>
       </Dialog>
 
-      <Snackbar
-        open={Boolean(toast)}
-        autoHideDuration={3500}
-        onClose={() => dispatch(clearToast())}
-        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      <Dialog
+        open={Boolean(captchaAssist)}
+        onClose={() => {
+          setCaptchaAssist(null);
+          setAdvancedPrefillOpen(false);
+        }}
+        maxWidth="sm"
+        fullWidth
+        scroll="paper"
+        aria-labelledby="captcha-dialog-title"
       >
-        <Alert
-          onClose={() => dispatch(clearToast())}
-          severity={toast?.type === "error" ? "error" : toast?.type === "warning" ? "warning" : "success"}
-          variant="filled"
-          sx={{ width: "100%" }}
-        >
-          {toast?.message || ""}
-        </Alert>
-      </Snackbar>
+        <DialogTitle id="captcha-dialog-title">
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <SmartToyIcon color="warning" />
+            <span>CAPTCHA required — your action</span>
+          </Stack>
+        </DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            <Typography variant="body2" color="text.secondary">
+              The employer site showed a human check (CAPTCHA). Automation cannot complete it for you. Follow the
+              steps below, then confirm at the bottom.
+            </Typography>
+            <Typography variant="body2">{captchaAssist?.nextAction}</Typography>
+            {captchaAssist?.prefillFields?.length ? (
+              <Typography variant="caption" color="text.secondary">
+                Mapped values ready for {captchaAssist.prefillFields.length} field
+                {captchaAssist.prefillFields.length === 1 ? "" : "s"}.
+              </Typography>
+            ) : null}
+            <Typography variant="body2">
+              <strong>Fill helper:</strong> copy the bookmarklet URL, add it as a bookmark, open the job page, solve the
+              CAPTCHA, then click the bookmark once to apply your saved field values.
+            </Typography>
+            {prefillSessionKey && pageOrigin ? (
+              <Stack spacing={1}>
+                <Button
+                  variant="contained"
+                  onClick={async () => {
+                    const href = buildPrefillBookmarkletHref(pageOrigin, prefillSessionKey);
+                    try {
+                      await navigator.clipboard.writeText(href);
+                      dispatch(
+                        setToast({
+                          type: "success",
+                          message:
+                            "Bookmarklet URL copied. Create a bookmark with this URL, then use it on the job page after the CAPTCHA."
+                        })
+                      );
+                    } catch {
+                      dispatch(
+                        setToast({
+                          type: "warning",
+                          message: "Copy the URL from the field below manually."
+                        })
+                      );
+                    }
+                  }}
+                >
+                  Copy fill helper (bookmarklet URL)
+                </Button>
+                <TextField
+                  size="small"
+                  fullWidth
+                  label="Bookmark URL"
+                  value={buildPrefillBookmarkletHref(pageOrigin, prefillSessionKey)}
+                  InputProps={{ readOnly: true }}
+                  onFocus={(e) => e.target.select()}
+                />
+              </Stack>
+            ) : (
+              <Typography variant="caption" color="text.secondary">
+                Preparing a one-time fill link…
+              </Typography>
+            )}
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => setAdvancedPrefillOpen((o) => !o)}
+              sx={{ alignSelf: "flex-start", textTransform: "none" }}
+            >
+              {advancedPrefillOpen ? "Hide" : "Show"} advanced (raw script)
+            </Button>
+            <Collapse in={advancedPrefillOpen}>
+              <Stack spacing={1}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  disabled={!captchaAssist?.prefillScript}
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(captchaAssist.prefillScript);
+                      dispatch(setToast({ type: "success", message: "Raw script copied." }));
+                    } catch {
+                      dispatch(setToast({ type: "warning", message: "Could not copy raw script." }));
+                    }
+                  }}
+                >
+                  Copy raw script
+                </Button>
+              </Stack>
+            </Collapse>
+            <Button
+              variant="outlined"
+              startIcon={<OpenInNewIcon />}
+              onClick={() => {
+                if (captchaAssist?.jobUrl) {
+                  window.open(captchaAssist.jobUrl, "_blank", "noopener,noreferrer");
+                }
+              }}
+            >
+              Open job page in new tab
+            </Button>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={captchaAcknowledged}
+                  onChange={(e) => setCaptchaAcknowledged(e.target.checked)}
+                  color="primary"
+                />
+              }
+              label="I finished the CAPTCHA (and used the fill helper on the job page if needed)."
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, py: 2, flexWrap: "wrap", gap: 1 }}>
+          <Button
+            onClick={() => {
+              setCaptchaAssist(null);
+              setAdvancedPrefillOpen(false);
+            }}
+          >
+            Dismiss
+          </Button>
+          <Button
+            variant="contained"
+            disabled={!captchaAcknowledged}
+            onClick={() => {
+              setCaptchaAssist(null);
+              setAdvancedPrefillOpen(false);
+              dispatch(
+                setToast({
+                  type: "success",
+                  message:
+                    "Noted. If you have not submitted the application yet, complete it on the employer site."
+                })
+              );
+            }}
+          >
+            Done
+          </Button>
+        </DialogActions>
+      </Dialog>
+
     </>
   );
 }

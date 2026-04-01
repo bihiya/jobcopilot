@@ -24,9 +24,6 @@ function inferDescriptionFromUrl(url) {
   if (normalized.includes("backend") || normalized.includes("node")) {
     return "Backend engineering role focused on APIs, Node.js services, and data systems.";
   }
-  if (normalized.includes("fullstack") || normalized.includes("full stack")) {
-    return "Full-stack engineering role across UI, APIs, and persistence layers.";
-  }
   return "Software engineering role with product development responsibilities.";
 }
 
@@ -34,23 +31,18 @@ function inferTitleFromUrl(url) {
   const normalized = normalizeText(url);
   if (normalized.includes("frontend")) return "Frontend Engineer";
   if (normalized.includes("backend")) return "Backend Engineer";
-  if (normalized.includes("fullstack") || normalized.includes("full stack")) {
-    return "Full Stack Engineer";
-  }
-  if (normalized.includes("data")) return "Data Engineer";
   return "Software Engineer";
 }
 
 function pickSearchUrl(query) {
-  const normalizedQuery = encodeURIComponent(String(query || "software engineer"));
-  return `https://www.linkedin.com/jobs/search/?keywords=${normalizedQuery}`;
+  const q = encodeURIComponent(String(query || "software engineer jobs"));
+  return `https://www.google.com/search?q=${q}&udm=8`;
 }
 
-function parseLinkedInCandidatesFromHtml(html, fallbackSearchUrl) {
+function parseGoogleCandidatesFromHtml(html, fallbackSearchUrl) {
   const candidates = [];
   const text = String(html || "");
 
-  // Extract LD+JSON JobPosting snippets when available.
   const jobPostingRegex =
     /<script[^>]*type=\"application\/ld\+json\"[^>]*>([\s\S]*?)<\/script>/gi;
   let match;
@@ -69,15 +61,15 @@ function parseLinkedInCandidatesFromHtml(html, fallbackSearchUrl) {
         const title = item.title || inferTitleFromUrl(url);
         const description = item.description || inferDescriptionFromUrl(url);
         const company =
-          item.hiringOrganization?.name || item?.hiringOrganization || "LinkedIn";
+          item.hiringOrganization?.name || item?.hiringOrganization || "Employer";
         const location =
           item.jobLocation?.address?.addressLocality ||
           item.jobLocationType ||
           "Unknown";
 
         candidates.push({
-          source: "linkedin",
-          externalId: `li-${Buffer.from(String(url)).toString("base64").slice(0, 24)}`,
+          source: "google",
+          externalId: `g-${Buffer.from(String(url)).toString("base64").slice(0, 24)}`,
           jobUrl: url,
           title,
           company,
@@ -94,7 +86,7 @@ function parseLinkedInCandidatesFromHtml(html, fallbackSearchUrl) {
   return candidates;
 }
 
-function classifyLinkedInBlocker(errorOrResponse) {
+function classifyGoogleBlocker(errorOrResponse) {
   const message = String(errorOrResponse?.message || "").toLowerCase();
   const html = String(errorOrResponse?.body || "").toLowerCase();
 
@@ -105,31 +97,24 @@ function classifyLinkedInBlocker(errorOrResponse) {
   ) {
     return {
       type: "rate_limited",
-      message: "LinkedIn rate-limited the request."
+      message: "Google rate-limited the request."
     };
   }
 
-  if (html.includes("captcha") || html.includes("verify you are human")) {
+  if (html.includes("captcha") || html.includes("unusual traffic")) {
     return {
       type: "anti_bot_challenge",
-      message: "LinkedIn anti-bot challenge detected."
-    };
-  }
-
-  if (html.includes("sign in") || html.includes("join now")) {
-    return {
-      type: "login_required",
-      message: "LinkedIn returned a login wall for job search."
+      message: "Google anti-bot challenge detected."
     };
   }
 
   return {
     type: "provider_error",
-    message: "LinkedIn fetch failed."
+    message: "Google Jobs fetch failed."
   };
 }
 
-async function fetchLinkedInJobs({
+async function fetchGoogleJobs({
   query,
   titleQuery,
   descriptionQuery,
@@ -141,22 +126,22 @@ async function fetchLinkedInJobs({
     typeof searchUrl === "string" && searchUrl.trim().length > 0
       ? searchUrl.trim()
       : pickSearchUrl(query);
-  const client = createRotatingHttpClient(transportConfig);
+  const client = createRotatingHttpClient({ ...transportConfig, provider: "google_jobs" });
 
   let html = "";
   try {
     const response = await client.get(resolvedSearchUrl);
     html = response.body || "";
   } catch (error) {
-    const warning = classifyLinkedInBlocker(error);
+    const warning = classifyGoogleBlocker(error);
     const fallback = [
       {
-        source: "linkedin",
-        externalId: `li-${Buffer.from(`${resolvedSearchUrl}-network-fallback`).toString("base64").slice(0, 24)}`,
+        source: "google",
+        externalId: `g-${Buffer.from(`${resolvedSearchUrl}-network-fallback`).toString("base64").slice(0, 24)}`,
         jobUrl: resolvedSearchUrl,
         title: inferTitleFromUrl(resolvedSearchUrl),
-        company: "LinkedIn Candidate Co",
-        location: "Remote",
+        company: "Google Jobs candidate",
+        location: "See listing",
         description: inferDescriptionFromUrl(resolvedSearchUrl),
         postedAt: new Date()
       }
@@ -164,7 +149,7 @@ async function fetchLinkedInJobs({
     return {
       jobs: fallback.slice(0, Math.max(1, Math.min(Number(limit) || 10, 50))),
       providerMeta: {
-        source: "linkedin",
+        source: "google",
         blocker: null,
         warning,
         degraded: true,
@@ -173,17 +158,16 @@ async function fetchLinkedInJobs({
     };
   }
 
-  let candidates = parseLinkedInCandidatesFromHtml(html, resolvedSearchUrl);
+  let candidates = parseGoogleCandidatesFromHtml(html, resolvedSearchUrl);
   if (candidates.length === 0) {
-    // Deterministic fallback record so pipeline stays stable in non-networked envs.
     candidates = [
       {
-        source: "linkedin",
-        externalId: `li-${Buffer.from(`${resolvedSearchUrl}-fallback`).toString("base64").slice(0, 24)}`,
+        source: "google",
+        externalId: `g-${Buffer.from(`${resolvedSearchUrl}-fallback`).toString("base64").slice(0, 24)}`,
         jobUrl: resolvedSearchUrl,
         title: inferTitleFromUrl(resolvedSearchUrl),
-        company: "LinkedIn Candidate Co",
-        location: "Remote",
+        company: "Google Jobs candidate",
+        location: "See listing",
         description: inferDescriptionFromUrl(resolvedSearchUrl),
         postedAt: new Date()
       }
@@ -202,7 +186,7 @@ async function fetchLinkedInJobs({
   return {
     jobs: filtered.slice(0, Math.max(1, Math.min(Number(limit) || 10, 50))),
     providerMeta: {
-      source: "linkedin",
+      source: "google",
       blocker: null,
       fetchedVia: "public_html"
     }
@@ -210,5 +194,5 @@ async function fetchLinkedInJobs({
 }
 
 module.exports = {
-  fetchLinkedInJobs
+  fetchGoogleJobs
 };

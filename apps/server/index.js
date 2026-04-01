@@ -1,4 +1,5 @@
 const path = require("path");
+const http = require("http");
 require("dotenv").config({
   path: path.join(__dirname, "../../.env")
 });
@@ -8,7 +9,13 @@ const {
   isDatabaseUnavailableError,
   databaseUnavailableResponse
 } = require("./db-connection-error");
-const { processJob } = require("./processJob");
+const { prepareProcessJob, runProcessJobPipeline } = require("./processJob");
+const {
+  markProcessFailure,
+  setProcessOutcome,
+  getProcessOutcome
+} = require("./processStateStore");
+const { attachAuditSocket } = require("./auditSocket");
 const {
   beginSiteAuthSession,
   listSiteAuthSessions,
@@ -16,7 +23,10 @@ const {
   validateSiteAuthSession,
   normalizeSiteFromUrl
 } = require("./siteAuthSession");
-const { fetchAndStorePublicJobs } = require("./publicJobFetch");
+const {
+  fetchAndStorePublicJobs,
+  fetchJobsFromUserPreferences
+} = require("./publicJobFetch");
 
 /** One connect flow per user+site so double-clicks do not spawn multiple browsers. */
 const connectFlowLocks = new Map();
@@ -24,22 +34,96 @@ const connectFlowLocks = new Map();
 const app = express();
 app.use(express.json());
 
+const port = Number(process.env.PORT || 4000);
+const server = http.createServer(app);
+const { broadcastAudit } = attachAuditSocket(server);
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
 app.post("/process", async (req, res) => {
   try {
-    const result = await processJob(req.body);
-    res.json(result);
+    const prep = await prepareProcessJob(req.body);
+    if (prep.resumed) {
+      return res.json({
+        job: prep.job,
+        site: prep.site,
+        resumed: true,
+        idempotencyKey: prep.idempotencyKey,
+        processState: prep.processState
+      });
+    }
+
+    res.status(202).json({
+      job: prep.job,
+      processing: true,
+      idempotencyKey: prep.idempotencyKey,
+      site: prep.site
+    });
+
+    runProcessJobPipeline(prep, { broadcastAudit })
+      .then((result) => setProcessOutcome({ idempotencyKey: prep.idempotencyKey, outcome: result }))
+      .catch(async (error) => {
+        console.error("Background processJob failed:", error);
+        await markProcessFailure({
+          idempotencyKey: prep.idempotencyKey,
+          error: error.message || "Process failed"
+        });
+        await setProcessOutcome({
+          idempotencyKey: prep.idempotencyKey,
+          outcome: {
+            error: true,
+            message: error.message || "Unexpected error while processing job"
+          }
+        });
+      });
   } catch (error) {
-    console.error("Failed to process job:", error);
+    console.error("Failed to start process job:", error);
     if (isDatabaseUnavailableError(error)) {
       return res.status(503).json(databaseUnavailableResponse());
     }
     res.status(500).json({
       error: "INTERNAL_SERVER_ERROR",
       message: error.message || "Unexpected error while processing job"
+    });
+  }
+});
+
+app.get("/process/outcome", async (req, res) => {
+  try {
+    const idempotencyKey = req.query.idempotencyKey;
+    if (!idempotencyKey || typeof idempotencyKey !== "string") {
+      return res.status(400).json({ error: "idempotencyKey is required" });
+    }
+    const userId = req.query.userId;
+    const outcome = await getProcessOutcome({ idempotencyKey });
+    if (!outcome) {
+      return res.json({ pending: true });
+    }
+    if (userId && outcome?.job?.userId && outcome.job.userId !== userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    return res.json({ done: true, outcome });
+  } catch (error) {
+    console.error("GET /process/outcome failed:", error);
+    return res.status(500).json({ error: "Failed to load outcome" });
+  }
+});
+
+app.post("/jobs/fetch-from-preferences", async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    if (!userId || typeof userId !== "string") {
+      return res.status(400).json({ error: "userId is required" });
+    }
+    const result = await fetchJobsFromUserPreferences(userId);
+    return res.json(result);
+  } catch (error) {
+    console.error("POST /jobs/fetch-from-preferences failed:", error);
+    const status = Number(error.status) >= 400 ? Number(error.status) : 500;
+    return res.status(status).json({
+      error: error.message || "Failed to fetch jobs from user preferences"
     });
   }
 });
@@ -240,7 +324,6 @@ app.post("/auth/connect/disconnect", async (req, res) => {
   }
 });
 
-const port = Number(process.env.PORT || 4000);
-app.listen(port, () => {
+server.listen(port, () => {
   console.log(`Server listening on port ${port}`);
 });

@@ -1,5 +1,26 @@
 import { createSlice } from "@reduxjs/toolkit";
 
+/**
+ * Redux state must be serializable. Prisma/Next may pass Date instances or odd values for dates.
+ */
+function normalizeJob(job) {
+  if (!job || typeof job !== "object") {
+    return job;
+  }
+  let createdAt = job.createdAt;
+  if (createdAt instanceof Date && !Number.isNaN(createdAt.getTime())) {
+    createdAt = createdAt.toISOString();
+  } else if (typeof createdAt === "string" && createdAt.length > 0) {
+    createdAt = createdAt;
+  } else {
+    createdAt = new Date().toISOString();
+  }
+  return {
+    ...job,
+    createdAt
+  };
+}
+
 const initialState = {
   jobs: [],
   filter: "all",
@@ -16,7 +37,7 @@ const dashboardSlice = createSlice({
   reducers: {
     initializeDashboard(state, action) {
       const { jobs = [], filter = "all", page = 1, pageSize = 10 } = action.payload || {};
-      state.jobs = jobs;
+      state.jobs = Array.isArray(jobs) ? jobs.map(normalizeJob) : [];
       state.filter = filter;
       state.page = page;
       state.pageSize = pageSize;
@@ -39,7 +60,7 @@ const dashboardSlice = createSlice({
       state.markingJobId = action.payload;
     },
     upsertJob(state, action) {
-      const nextJob = action.payload;
+      const nextJob = normalizeJob(action.payload);
       const existingIndex = state.jobs.findIndex((job) => job.id === nextJob.id);
       if (existingIndex >= 0) {
         state.jobs[existingIndex] = nextJob;
@@ -48,7 +69,7 @@ const dashboardSlice = createSlice({
       }
     },
     replaceJob(state, action) {
-      const nextJob = action.payload;
+      const nextJob = normalizeJob(action.payload);
       state.jobs = state.jobs.map((job) => (job.id === nextJob.id ? nextJob : job));
     },
     removeJob(state, action) {

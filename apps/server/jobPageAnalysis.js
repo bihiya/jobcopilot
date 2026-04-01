@@ -75,135 +75,246 @@ function normalizeFieldRecord(field) {
   };
 }
 
+/** Serialized into the browser context for every frame (main + iframes). */
+function browserExtractSnapshot() {
+  function getLabelFor(control) {
+    const id = control.getAttribute("id");
+    if (id) {
+      try {
+        const label =
+          typeof CSS !== "undefined" && typeof CSS.escape === "function"
+            ? document.querySelector(`label[for="${CSS.escape(id)}"]`)
+            : document.querySelector(`label[for="${id.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`);
+        if (label?.textContent) return label.textContent.trim();
+      } catch {
+        /* ignore invalid selector */
+      }
+    }
+    const wrappedLabel = control.closest("label");
+    if (wrappedLabel?.textContent) {
+      return wrappedLabel.textContent.trim();
+    }
+    const aria = control.getAttribute("aria-label");
+    if (aria) return aria.trim();
+    return null;
+  }
+
+  function collectButtons() {
+    const seen = new Set();
+    const out = [];
+    const selectors = [
+      "button",
+      'a[role="button"]',
+      'input[type="submit"]',
+      'input[type="button"]',
+      "[data-automation-id]",
+      'a[href*="apply" i]',
+      'a[href*="Apply" i]'
+    ];
+    const nodes = [];
+    for (const sel of selectors) {
+      try {
+        document.querySelectorAll(sel).forEach((el) => nodes.push(el));
+      } catch {
+        /* invalid selector in old engines */
+      }
+    }
+    for (const el of nodes) {
+      const tag = el.tagName.toLowerCase();
+      const t = (el.getAttribute("type") || "").toLowerCase();
+      if (tag === "input" && t && !["submit", "button"].includes(t)) continue;
+
+      const text = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 200);
+      const aria = (el.getAttribute("aria-label") || "").trim().slice(0, 200);
+      const dataAuto = (el.getAttribute("data-automation-id") || "").trim().slice(0, 150);
+      const href = tag === "a" ? (el.getAttribute("href") || "").slice(0, 220) : "";
+      const disabled = el.disabled === true || el.getAttribute("aria-disabled") === "true";
+      const key = `${text}|${aria}|${dataAuto}|${href}`.slice(0, 500);
+      if (seen.has(key)) continue;
+      if (!text && !aria && !dataAuto && !href) continue;
+      seen.add(key);
+      out.push({
+        tag,
+        text: text || aria || dataAuto || href || "?",
+        ariaLabel: aria || null,
+        dataAutomationId: dataAuto || null,
+        href: href || null,
+        disabled: Boolean(disabled)
+      });
+      if (out.length >= 45) break;
+    }
+    return out;
+  }
+
+  const controls = Array.from(document.querySelectorAll("input, select, textarea"));
+  const parsedFields = controls
+    .map((control) => {
+      const tag = control.tagName.toLowerCase();
+      const type = tag === "input" ? (control.getAttribute("type") || "text").toLowerCase() : tag;
+      if (["hidden", "submit", "button", "reset", "image"].includes(type)) {
+        return null;
+      }
+
+      const options =
+        tag === "select"
+          ? Array.from(control.querySelectorAll("option"))
+              .map((option) => (option.textContent || "").trim())
+              .filter(Boolean)
+          : [];
+
+      const validationRules = [];
+      if (control.hasAttribute("required")) validationRules.push("required");
+      const minLength = control.getAttribute("minlength");
+      if (minLength) validationRules.push(`minlength:${minLength}`);
+      const maxLength = control.getAttribute("maxlength");
+      if (maxLength) validationRules.push(`maxlength:${maxLength}`);
+      const pattern = control.getAttribute("pattern");
+      if (pattern) validationRules.push(`pattern:${pattern}`);
+
+      const section =
+        control.closest("fieldset")?.querySelector("legend")?.textContent?.trim() ||
+        control.closest("section")?.getAttribute("aria-label") ||
+        control.closest("form")?.getAttribute("id") ||
+        null;
+
+      const stepHolder = control.closest("[data-step], [data-current-step], [aria-current='step']");
+      const stepRaw =
+        stepHolder?.getAttribute("data-step") ||
+        stepHolder?.getAttribute("data-current-step") ||
+        null;
+      const step = Number(stepRaw);
+
+      const id = control.getAttribute("id");
+      const name = control.getAttribute("name");
+      const placeholder = control.getAttribute("placeholder");
+      const label = getLabelFor(control);
+      const fieldIdentifier = name || id || label || placeholder;
+
+      if (!fieldIdentifier) {
+        return null;
+      }
+
+      return {
+        fieldIdentifier,
+        id,
+        name,
+        label,
+        placeholder,
+        type,
+        required: control.hasAttribute("required"),
+        options,
+        section,
+        step: Number.isFinite(step) && step > 0 ? step : 1,
+        validationRules
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 80);
+
+  const buttonTexts = Array.from(document.querySelectorAll("button, a[role='button']"))
+    .map((node) => (node.textContent || "").trim())
+    .filter(Boolean)
+    .slice(0, 200)
+    .join(" ");
+
+  const oauthButtons = document.querySelectorAll(
+    "button[aria-label*='google' i], button[aria-label*='linkedin' i], button[aria-label*='github' i]"
+  ).length;
+
+  const buttons = collectButtons();
+
+  return {
+    text: document.body?.innerText || "",
+    parsedFields,
+    buttons,
+    oauthButtons,
+    hasAuthForm:
+      Boolean(document.querySelector("form[action*='login' i], form[action*='signin' i], input[name*='password' i]")) ||
+      /sign\s*in|log\s*in/i.test(buttonTexts),
+    hasDisabledApplyButton: Array.from(document.querySelectorAll("button, a[role='button']")).some((btn) => {
+      const label = (btn.textContent || "").toLowerCase();
+      const disabled = btn.hasAttribute("disabled") || btn.getAttribute("aria-disabled") === "true";
+      return disabled && (label.includes("apply") || label.includes("submit"));
+    })
+  };
+}
+
+function dedupeFields(fields) {
+  const map = new Map();
+  for (const f of fields) {
+    const key = String(f.fieldIdentifier || f.name || f.id || "").trim();
+    if (!key) continue;
+    if (!map.has(key)) map.set(key, f);
+  }
+  return Array.from(map.values()).slice(0, 80);
+}
+
+function dedupeButtons(buttons) {
+  const map = new Map();
+  for (const b of buttons) {
+    const key = `${b.text || ""}|${b.ariaLabel || ""}|${b.dataAutomationId || ""}|${b.href || ""}`.slice(0, 500);
+    if (!key.trim()) continue;
+    if (!map.has(key)) map.set(key, b);
+  }
+  return Array.from(map.values()).slice(0, 60);
+}
+
 async function analyzeWithPlaywright(jobUrl) {
   const browser = await chromium.launch({ headless: true });
   try {
-    const context = await browser.newContext();
+    const context = await browser.newContext({
+      viewport: { width: 1365, height: 900 },
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+    });
     const page = await context.newPage();
     const response = await page.goto(jobUrl, {
       waitUntil: "domcontentloaded",
       timeout: 45000
     });
 
-    await page.waitForTimeout(1200);
+    await page.waitForTimeout(1800);
+    await page.waitForLoadState("networkidle", { timeout: 25000 }).catch(() => {});
 
-    const domAnalysis = await page.evaluate(() => {
-      function getLabelFor(control) {
-        const id = control.getAttribute("id");
-        if (id) {
-          const label = document.querySelector(`label[for="${id}"]`);
-          if (label?.textContent) return label.textContent.trim();
-        }
-        const wrappedLabel = control.closest("label");
-        if (wrappedLabel?.textContent) {
-          return wrappedLabel.textContent.trim();
-        }
-        const aria = control.getAttribute("aria-label");
-        if (aria) return aria.trim();
-        return null;
+    const frames = page.frames();
+    const mergedFields = [];
+    const mergedButtons = [];
+    const texts = [];
+    let maxOauth = 0;
+    let hasAuthForm = false;
+    let hasDisabledApply = false;
+    let framesOk = 0;
+
+    for (const frame of frames) {
+      try {
+        const snap = await frame.evaluate(browserExtractSnapshot);
+        framesOk += 1;
+        mergedFields.push(...(snap.parsedFields || []));
+        mergedButtons.push(...(snap.buttons || []));
+        texts.push(snap.text || "");
+        maxOauth = Math.max(maxOauth, snap.oauthButtons || 0);
+        hasAuthForm = hasAuthForm || snap.hasAuthForm;
+        hasDisabledApply = hasDisabledApply || snap.hasDisabledApplyButton;
+      } catch {
+        /* cross-origin or detached frame */
       }
+    }
 
-      const controls = Array.from(document.querySelectorAll("input, select, textarea"));
-      const parsedFields = controls
-        .map((control) => {
-          const tag = control.tagName.toLowerCase();
-          const type = tag === "input" ? (control.getAttribute("type") || "text").toLowerCase() : tag;
-          if (["hidden", "submit", "button", "reset", "image"].includes(type)) {
-            return null;
-          }
+    const dedupedFields = dedupeFields(mergedFields);
+    const dedupedButtons = dedupeButtons(mergedButtons);
+    const combinedText = texts.filter(Boolean).join("\n\n");
+    const buttonLabelBlob = dedupedButtons.map((b) => b.text).join(" ");
 
-          const options =
-            tag === "select"
-              ? Array.from(control.querySelectorAll("option"))
-                  .map((option) => (option.textContent || "").trim())
-                  .filter(Boolean)
-              : [];
-
-          const validationRules = [];
-          if (control.hasAttribute("required")) validationRules.push("required");
-          const minLength = control.getAttribute("minlength");
-          if (minLength) validationRules.push(`minlength:${minLength}`);
-          const maxLength = control.getAttribute("maxlength");
-          if (maxLength) validationRules.push(`maxlength:${maxLength}`);
-          const pattern = control.getAttribute("pattern");
-          if (pattern) validationRules.push(`pattern:${pattern}`);
-
-          const section =
-            control.closest("fieldset")?.querySelector("legend")?.textContent?.trim() ||
-            control.closest("section")?.getAttribute("aria-label") ||
-            control.closest("form")?.getAttribute("id") ||
-            null;
-
-          const stepHolder = control.closest("[data-step], [data-current-step], [aria-current='step']");
-          const stepRaw =
-            stepHolder?.getAttribute("data-step") ||
-            stepHolder?.getAttribute("data-current-step") ||
-            null;
-          const step = Number(stepRaw);
-
-          const id = control.getAttribute("id");
-          const name = control.getAttribute("name");
-          const placeholder = control.getAttribute("placeholder");
-          const label = getLabelFor(control);
-          const fieldIdentifier = name || id || label || placeholder;
-
-          if (!fieldIdentifier) {
-            return null;
-          }
-
-          return {
-            fieldIdentifier,
-            id,
-            name,
-            label,
-            placeholder,
-            type,
-            required: control.hasAttribute("required"),
-            options,
-            section,
-            step: Number.isFinite(step) && step > 0 ? step : 1,
-            validationRules
-          };
-        })
-        .filter(Boolean)
-        .slice(0, 80);
-
-      const authWallSelectors = [
-        "form[action*='login' i]",
-        "form[action*='signin' i]",
-        "input[name*='password' i]",
-        "button:has-text('Sign in')",
-        "button:has-text('Log in')",
-        "a[href*='login' i]",
-        "a[href*='signin' i]",
-        "button[disabled]"
-      ];
-
-      const buttonTexts = Array.from(document.querySelectorAll("button, a[role='button']"))
-        .map((node) => (node.textContent || "").trim())
-        .filter(Boolean)
-        .slice(0, 200)
-        .join(" ");
-
-      const oauthButtons = document.querySelectorAll(
-        "button[aria-label*='google' i], button[aria-label*='linkedin' i], button[aria-label*='github' i]"
-      ).length;
-
-      return {
-        text: document.body?.innerText || "",
-        html: document.documentElement?.outerHTML || "",
-        parsedFields,
-        oauthButtons,
-        hasAuthForm:
-          Boolean(document.querySelector("form[action*='login' i], form[action*='signin' i], input[name*='password' i]")) ||
-          /sign\s*in|log\s*in/i.test(buttonTexts),
-        hasDisabledApplyButton: Array.from(document.querySelectorAll("button, a[role='button']")).some((btn) => {
-          const label = (btn.textContent || "").toLowerCase();
-          const disabled = btn.hasAttribute("disabled") || btn.getAttribute("aria-disabled") === "true";
-          return disabled && (label.includes("apply") || label.includes("submit"));
-        })
-      };
-    });
+    const domAnalysis = {
+      text: `${combinedText}\n${buttonLabelBlob}`,
+      parsedFields: dedupedFields,
+      buttons: dedupedButtons,
+      oauthButtons: maxOauth,
+      hasAuthForm,
+      hasDisabledApplyButton: hasDisabledApply,
+      framesSampled: framesOk,
+      frameCount: frames.length
+    };
 
     const textSignal = evaluateSignalsFromText(domAnalysis.text || "");
     const robustSignalHits = {
@@ -223,6 +334,10 @@ async function analyzeWithPlaywright(jobUrl) {
       ...decision,
       signals: robustSignals,
       parsedFields: (domAnalysis.parsedFields || []).map(normalizeFieldRecord),
+      buttons: domAnalysis.buttons || [],
+      buttonCount: (domAnalysis.buttons || []).length,
+      framesSampled: domAnalysis.framesSampled,
+      frameCount: domAnalysis.frameCount,
       selectors: {
         hasAuthForm: domAnalysis.hasAuthForm,
         oauthButtons: domAnalysis.oauthButtons,
@@ -314,6 +429,10 @@ async function analyzeJobPageAccess({ jobUrl }) {
         canApplyWithoutAuth: signalSummary.canApplyWithoutAuth,
         signals: signalSummary.signals,
         parsedFields: parseFieldsFromRawHtml(page.html),
+        buttons: [],
+        buttonCount: 0,
+        framesSampled: 0,
+        frameCount: 0,
         selectors: {
           hasAuthForm: false,
           oauthButtons: 0,
@@ -332,6 +451,10 @@ async function analyzeJobPageAccess({ jobUrl }) {
         canApplyWithoutAuth: false,
         signals: [],
         parsedFields: [],
+        buttons: [],
+        buttonCount: 0,
+        framesSampled: 0,
+        frameCount: 0,
         selectors: {
           hasAuthForm: false,
           oauthButtons: 0,

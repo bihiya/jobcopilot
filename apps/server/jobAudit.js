@@ -12,6 +12,7 @@ async function appendJobAudit(prisma, { jobId, userId, step, message, meta }) {
     }
   });
   return {
+    id: row.id,
     step,
     message,
     meta: row.meta ?? null,

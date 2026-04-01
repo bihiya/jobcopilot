@@ -42,6 +42,8 @@ model UserProfile {
   experience       String?
   skills           Json?
   resumeUrl        String?
+  /// e.g. { "sources": ["linkedin","google"], "query": "...", "title": "...", "location": "...", "limit": 10 }
+  jobSearchPreferences Json?
   user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 

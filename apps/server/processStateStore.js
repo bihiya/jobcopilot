@@ -95,10 +95,40 @@ async function markProcessFailure({ idempotencyKey, error }) {
   });
 }
 
+async function setProcessOutcome({ idempotencyKey, outcome }) {
+  await ensureIndexes();
+  await prisma.$runCommandRaw({
+    update: COLLECTION_NAME,
+    updates: [
+      {
+        q: { idempotencyKey },
+        u: {
+          $set: {
+            outcome,
+            outcomeReady: true,
+            updatedAt: new Date()
+          }
+        },
+        upsert: false
+      }
+    ]
+  });
+}
+
+async function getProcessOutcome({ idempotencyKey }) {
+  const state = await getProcessState({ idempotencyKey });
+  if (!state?.outcomeReady) {
+    return null;
+  }
+  return state.outcome ?? null;
+}
+
 module.exports = {
   makeIdempotencyKey,
   getProcessState,
   initializeProcessState,
   setProcessStep,
-  markProcessFailure
+  markProcessFailure,
+  setProcessOutcome,
+  getProcessOutcome
 };

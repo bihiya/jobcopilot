@@ -5,6 +5,10 @@ const SOURCE_CONFIG = {
     domain: "linkedin.com",
     officialApiEnv: "LINKEDIN_OFFICIAL_API_URL"
   },
+  google: {
+    domain: "google.com",
+    officialApiEnv: "GOOGLE_JOBS_OFFICIAL_API_URL"
+  },
   naukri: {
     domain: "naukri.com",
     officialApiEnv: "NAUKRI_OFFICIAL_API_URL"
@@ -37,7 +41,7 @@ function parseBoolean(value, fallback = false) {
 function isAllowedSource(source) {
   const allowList = parseList(process.env.PUBLIC_JOB_FETCH_ALLOWED_SOURCES);
   if (allowList.length === 0) {
-    return source === "linkedin";
+    return source === "linkedin" || source === "google";
   }
   return allowList.includes(source);
 }
@@ -68,7 +72,13 @@ function isDomainAllowed(source, target) {
   return actual === expected || actual.endsWith(`.${expected}`);
 }
 
-function evaluateCompliance({ source, searchUrl, requireOfficialApi = false }) {
+function evaluateCompliance({
+  source,
+  searchUrl,
+  requireOfficialApi = false,
+  /** When true (e.g. user “Discover” fetch), ignore REQUIRE_OFFICIAL_API_ONLY for HTML providers. */
+  allowHtmlPublicFetch = false
+}) {
   const normalizedSource = normalizeSource(source);
   const sourceConfig = resolveSourceConfig(normalizedSource);
 
@@ -92,8 +102,9 @@ function evaluateCompliance({ source, searchUrl, requireOfficialApi = false }) {
     };
   }
 
+  const envRequiresOfficialApi = parseBoolean(process.env.REQUIRE_OFFICIAL_API_ONLY, false);
   const requireOfficialApiOnly =
-    parseBoolean(process.env.REQUIRE_OFFICIAL_API_ONLY, false) || Boolean(requireOfficialApi);
+    (envRequiresOfficialApi && !allowHtmlPublicFetch) || Boolean(requireOfficialApi);
   const officialApiUrl = process.env[sourceConfig.officialApiEnv] || null;
   if (requireOfficialApiOnly && !officialApiUrl) {
     return {
@@ -102,7 +113,7 @@ function evaluateCompliance({ source, searchUrl, requireOfficialApi = false }) {
         type: "official_api_required",
         message:
           `Compliance policy requires official API for ${normalizedSource}. ` +
-          `Set ${sourceConfig.officialApiEnv} to proceed.`
+          `Set ${sourceConfig.officialApiEnv} to proceed, or use Discover fetch from the app (HTML), or set REQUIRE_OFFICIAL_API_ONLY=false.`
       }
     };
   }
@@ -150,7 +161,8 @@ function assertProviderFetchAllowed({
   source,
   allowScraping = false,
   hasOfficialApi = false,
-  requireOfficialApi = false
+  requireOfficialApi = false,
+  allowHtmlPublicFetch = false
 }) {
   const normalizedSource = normalizeSource(source);
   if (!isAllowedSource(normalizedSource)) {
@@ -161,8 +173,9 @@ function assertProviderFetchAllowed({
     throw error;
   }
 
+  const envRequiresOfficialApi = parseBoolean(process.env.REQUIRE_OFFICIAL_API_ONLY, false);
   const requireOfficialApiOnly =
-    parseBoolean(process.env.REQUIRE_OFFICIAL_API_ONLY, false) || Boolean(requireOfficialApi);
+    (envRequiresOfficialApi && !allowHtmlPublicFetch) || Boolean(requireOfficialApi);
   if (requireOfficialApiOnly && !hasOfficialApi) {
     const config = resolveSourceConfig(normalizedSource);
     const error = new Error(
@@ -178,8 +191,13 @@ function assertProviderFetchAllowed({
     throw error;
   }
 
-  const scrapeAllowedByEnv = parseBoolean(process.env.PUBLIC_JOB_FETCH_ALLOW_SCRAPING, false);
-  if (allowScraping && !scrapeAllowedByEnv && !hasOfficialApi) {
+  const scrapeAllowedByEnv = parseBoolean(process.env.PUBLIC_JOB_FETCH_ALLOW_SCRAPING, true);
+  if (
+    allowScraping &&
+    !scrapeAllowedByEnv &&
+    !hasOfficialApi &&
+    !allowHtmlPublicFetch
+  ) {
     const error = new Error(
       `Scraping mode is disabled by policy for source "${normalizedSource}".`
     );

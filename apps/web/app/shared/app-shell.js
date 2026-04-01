@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import {
   AppBar,
   Avatar,
@@ -13,11 +14,20 @@ import {
   Typography
 } from "@mui/material";
 import DashboardRoundedIcon from "@mui/icons-material/DashboardRounded";
+import TravelExploreRoundedIcon from "@mui/icons-material/TravelExploreRounded";
 import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
 import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
+import ReduxToast from "./redux-toast";
+
+function navActive(pathname, href) {
+  if (!pathname) return false;
+  if (href === "/") return pathname === "/";
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
 
 export default function AppShell({ title, subtitle, user, children }) {
+  const pathname = usePathname() || "";
   return (
     <Box sx={{ minHeight: "100vh", background: "linear-gradient(180deg, #f6f8ff 0%, #f7fbff 100%)" }}>
       <AppBar
@@ -93,6 +103,7 @@ export default function AppShell({ title, subtitle, user, children }) {
           ) : null}
         </Stack>
         {children}
+        <ReduxToast />
       </Container>
     </Box>
   );

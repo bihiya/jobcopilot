@@ -9,38 +9,55 @@ const {
 } = require("./siteAuthSession");
 const { markCredentialResult } = require("./domainCredentialStore");
 
+function isDetachedOrClosedError(err) {
+  const msg = String(err?.message || err || "").toLowerCase();
+  return (
+    msg.includes("target page, context or browser has been closed") ||
+    msg.includes("has been closed") ||
+    msg.includes("execution context was destroyed") ||
+    msg.includes("cannot find context")
+  );
+}
+
 /**
  * Try to fill one form control matched by fieldIdentifier (name, id, label, placeholder).
  */
 async function tryFillElement(locator, value) {
-  const count = await locator.count();
-  if (!count) return false;
-  const el = locator.first();
-  const tag = await el.evaluate((node) => node.tagName.toLowerCase());
-  const inputType = (await el.getAttribute("type"))?.toLowerCase() || "text";
-  if (inputType === "hidden") return false;
-  if (inputType === "file") return false;
-  if (inputType === "checkbox" || inputType === "radio") return false;
+  try {
+    const count = await locator.count();
+    if (!count) return false;
+    const el = locator.first();
+    const tag = await el.evaluate((node) => node.tagName.toLowerCase());
+    const inputType = (await el.getAttribute("type"))?.toLowerCase() || "text";
+    if (inputType === "hidden") return false;
+    if (inputType === "file") return false;
+    if (inputType === "checkbox" || inputType === "radio") return false;
 
-  const str = String(value ?? "");
-  if (tag === "select") {
-    await el.selectOption({ label: str }).catch(async () => {
-      await el.selectOption({ value: str }).catch(async () => {
-        const opts = await el.locator("option").all();
-        for (const opt of opts) {
-          const t = (await opt.textContent())?.trim();
-          if (t && str.toLowerCase().includes(t.toLowerCase())) {
-            await opt.click();
-            return;
+    const str = String(value ?? "");
+    if (tag === "select") {
+      await el.selectOption({ label: str }).catch(async () => {
+        await el.selectOption({ value: str }).catch(async () => {
+          const optLoc = el.locator("option");
+          const n = await optLoc.count();
+          for (let i = 0; i < n; i += 1) {
+            const opt = optLoc.nth(i);
+            const t = (await opt.textContent())?.trim();
+            if (t && str.toLowerCase().includes(t.toLowerCase())) {
+              await opt.click();
+              return;
+            }
           }
-        }
+        });
       });
-    });
-    return true;
-  }
+      return true;
+    }
 
-  await el.fill(str);
-  return true;
+    await el.fill(str);
+    return true;
+  } catch {
+    /* Best-effort fill: navigation, closed page, or DOM quirks should not abort the apply flow. */
+    return false;
+  }
 }
 
 async function fillOneField(page, fieldIdentifier, value) {
@@ -49,37 +66,41 @@ async function fillOneField(page, fieldIdentifier, value) {
   if (!id) return false;
   const strVal = String(value);
 
-  const safeAttr = id.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const byName = page.locator(
-    `input[name="${safeAttr}"], textarea[name="${safeAttr}"], select[name="${safeAttr}"]`
-  );
-  if (await byName.count()) {
-    if (await tryFillElement(byName, strVal)) return true;
-  }
-
-  if (/^[\w.-]+$/.test(id)) {
-    const byId = page.locator(`[id="${id.replace(/"/g, '\\"')}"]`);
-    if (await byId.count()) {
-      if (await tryFillElement(byId, strVal)) return true;
-    }
-  }
-
   try {
-    const byLabel = page.getByLabel(id, { exact: false }).first();
-    if (await byLabel.count()) {
-      if (await tryFillElement(byLabel, strVal)) return true;
+    const safeAttr = id.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const byName = page.locator(
+      `input[name="${safeAttr}"], textarea[name="${safeAttr}"], select[name="${safeAttr}"]`
+    );
+    if (await byName.count()) {
+      if (await tryFillElement(byName, strVal)) return true;
+    }
+
+    if (/^[\w.-]+$/.test(id)) {
+      const byId = page.locator(`[id="${id.replace(/"/g, '\\"')}"]`);
+      if (await byId.count()) {
+        if (await tryFillElement(byId, strVal)) return true;
+      }
+    }
+
+    try {
+      const byLabel = page.getByLabel(id, { exact: false }).first();
+      if (await byLabel.count()) {
+        if (await tryFillElement(byLabel, strVal)) return true;
+      }
+    } catch {
+      /* no matching label */
+    }
+
+    try {
+      const byPh = page.getByPlaceholder(id, { exact: false }).first();
+      if (await byPh.count()) {
+        if (await tryFillElement(byPh, strVal)) return true;
+      }
+    } catch {
+      /* no matching placeholder */
     }
   } catch {
-    /* no matching label */
-  }
-
-  try {
-    const byPh = page.getByPlaceholder(id, { exact: false }).first();
-    if (await byPh.count()) {
-      if (await tryFillElement(byPh, strVal)) return true;
-    }
-  } catch {
-    /* no matching placeholder */
+    return false;
   }
 
   return false;
@@ -349,7 +370,32 @@ async function runApplyFlowWithPlaywright({
     const fillSummary = await fillFieldsOnPage(page, filledFields);
     await new Promise((r) => setTimeout(r, 400));
 
-    const content = await page.content();
+    let content;
+    try {
+      if (page.isClosed()) {
+        throw new Error("Target page, context or browser has been closed");
+      }
+      content = await page.content();
+    } catch (err) {
+      if (!isDetachedOrClosedError(err) && !String(err?.message || "").includes("closed")) {
+        throw err;
+      }
+      await markCredentialResult({ userId, site, success: false });
+      const manualPrefill = buildManualPrefillBundle(filledFields);
+      return {
+        applied: false,
+        blocker: {
+          type: "page_unavailable",
+          message:
+            "The employer tab closed or navigated during apply (often after a select or redirect). Open the job page again, then retry or use the fill helper."
+        },
+        failureReason: "page_unavailable",
+        fillSummary,
+        manualPrefill,
+        nextAction:
+          "Reload the job application page when it is stable, then use the JobCopilot “Fill helper” bookmark from your dashboard."
+      };
+    }
     let blocker = detectBlocker(content);
 
     if (blocker?.blockerType === "captcha") {
@@ -365,7 +411,7 @@ async function runApplyFlowWithPlaywright({
         fillSummary,
         manualPrefill,
         nextAction:
-          "CAPTCHA detected. Open the job page, solve CAPTCHA manually, run manualPrefill.prefillScript in browser console, then submit."
+          "CAPTCHA detected. Open the job page, solve the CAPTCHA, then use the JobCopilot “Fill helper” bookmark from your dashboard (no developer console)."
       };
     }
 
@@ -381,7 +427,7 @@ async function runApplyFlowWithPlaywright({
         fillSummary,
         manualPrefill: buildManualPrefillBundle(filledFields),
         nextAction:
-          "Open the job page manually, run manualPrefill.prefillScript, and complete the remaining step."
+          "Open the job page, then use the JobCopilot “Fill helper” bookmark from your dashboard to apply mapped fields."
       };
     }
 
@@ -398,7 +444,7 @@ async function runApplyFlowWithPlaywright({
         fillSummary,
         manualPrefill,
         nextAction:
-          "Open the job page manually, run manualPrefill.prefillScript, and complete the remaining step."
+          "Open the job page, then use the JobCopilot “Fill helper” bookmark from your dashboard to apply mapped fields."
       };
     }
 
