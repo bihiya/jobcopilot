@@ -29,16 +29,22 @@ function navActive(pathname, href) {
 export default function AppShell({ title, subtitle, user, children }) {
   const pathname = usePathname() || "";
   return (
-    <Box sx={{ minHeight: "100vh", background: "linear-gradient(180deg, #f6f8ff 0%, #f7fbff 100%)" }}>
+    <Box
+      sx={{
+        minHeight: "100vh",
+        background:
+          "radial-gradient(circle at 8% 15%, rgba(255, 111, 175, 0.22) 0%, rgba(255, 111, 175, 0) 32%), radial-gradient(circle at 88% 20%, rgba(240, 101, 194, 0.18) 0%, rgba(240, 101, 194, 0) 34%), linear-gradient(180deg, #fff5fb 0%, #fff9fc 100%)"
+      }}
+    >
       <AppBar
         position="sticky"
         color="transparent"
         elevation={0}
         sx={{
-          backdropFilter: "blur(8px)",
+          backdropFilter: "blur(12px)",
           borderBottom: "1px solid",
-          borderColor: "divider",
-          backgroundColor: "rgba(255,255,255,0.85)"
+          borderColor: "rgba(214, 51, 132, 0.12)",
+          backgroundColor: "rgba(255,255,255,0.78)"
         }}
       >
         <Toolbar sx={{ gap: 1.5, minHeight: 72 }}>
@@ -82,6 +88,7 @@ export default function AppShell({ title, subtitle, user, children }) {
             startIcon={<LogoutRoundedIcon />}
             variant="outlined"
             size="small"
+            sx={{ borderColor: "rgba(214, 51, 132, 0.25)" }}
           >
             Sign out
           </Button>
