@@ -28,15 +28,16 @@ const jakarta = Plus_Jakarta_Sans({
   display: "swap"
 });
 
-/** Tripwalaah-style travel app palette: teal primary, warm sky background */
+/** Pink, premium palette with soft gradients and strong contrast. */
 const brand = {
-  primary: "#0d9488",
-  primaryHover: "#0f766e",
-  ink: "#0f172a",
-  muted: "#64748b",
-  strip: "linear-gradient(115deg, #0d9488 0%, #14b8a6 42%, #0891b2 100%)",
-  pageBg: "linear-gradient(180deg, #ecfeff 0%, #f8fafc 42%, #fffbeb 100%)",
-  fieldFocus: "#0d9488"
+  primary: "#d63384",
+  primaryHover: "#b6266d",
+  ink: "#311126",
+  muted: "#7a4765",
+  strip: "linear-gradient(115deg, #d63384 0%, #f065c2 48%, #ff8dcf 100%)",
+  pageBg:
+    "radial-gradient(circle at 10% 14%, rgba(255, 111, 175, 0.28) 0%, rgba(255, 111, 175, 0) 34%), radial-gradient(circle at 86% 18%, rgba(240, 101, 194, 0.22) 0%, rgba(240, 101, 194, 0) 32%), linear-gradient(180deg, #fff4fa 0%, #fff8fc 48%, #fff2f9 100%)",
+  fieldFocus: "#d63384"
 };
 
 /** Main auth: sign in / sign up tabs. Secondary: forgot password. */
@@ -199,8 +200,8 @@ export default function AuthCard({ initialMode = "login" }) {
           sx={{
             borderRadius: 3,
             overflow: "hidden",
-            border: "1px solid rgba(13, 148, 136, 0.12)",
-            boxShadow: "0 24px 48px -12px rgba(15, 23, 42, 0.12), 0 0 0 1px rgba(255,255,255,0.8) inset"
+            border: "1px solid rgba(214, 51, 132, 0.16)",
+            boxShadow: "0 24px 48px -12px rgba(214, 51, 132, 0.22), 0 0 0 1px rgba(255,255,255,0.8) inset"
           }}
         >
           <Box
@@ -345,7 +346,7 @@ export default function AuthCard({ initialMode = "login" }) {
                           fontWeight: 700,
                           fontSize: "1rem",
                           bgcolor: brand.primary,
-                          boxShadow: "0 10px 24px -8px rgba(13, 148, 136, 0.55)",
+                          boxShadow: "0 12px 28px -8px rgba(214, 51, 132, 0.48)",
                           "&:hover": { bgcolor: brand.primaryHover }
                         }}
                       >
@@ -375,7 +376,7 @@ export default function AuthCard({ initialMode = "login" }) {
                       borderColor: "rgba(15, 23, 42, 0.12)",
                       bgcolor: "#fff",
                       color: brand.ink,
-                      "&:hover": { borderColor: brand.primary, bgcolor: "rgba(13, 148, 136, 0.04)" }
+                      "&:hover": { borderColor: brand.primary, bgcolor: "rgba(214, 51, 132, 0.04)" }
                     }}
                   >
                     Google
@@ -507,7 +508,7 @@ export default function AuthCard({ initialMode = "login" }) {
                           fontWeight: 600,
                           borderColor: brand.primary,
                           color: brand.primary,
-                          "&:hover": { borderColor: brand.primaryHover, bgcolor: "rgba(13, 148, 136, 0.06)" }
+                          "&:hover": { borderColor: brand.primaryHover, bgcolor: "rgba(214, 51, 132, 0.06)" }
                         }}
                       >
                         {loading ? "Please wait…" : "Set new password"}

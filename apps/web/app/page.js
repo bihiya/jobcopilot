@@ -44,7 +44,8 @@ function LandingPage() {
     <Box
       sx={{
         minHeight: "100vh",
-        background: "linear-gradient(180deg, #f7f9fc 0%, #eef3ff 100%)",
+        background:
+          "radial-gradient(circle at 15% 12%, rgba(255, 111, 175, 0.35) 0%, rgba(255, 111, 175, 0) 38%), radial-gradient(circle at 82% 22%, rgba(240, 101, 194, 0.28) 0%, rgba(240, 101, 194, 0) 40%), linear-gradient(180deg, #fff5fb 0%, #ffeef8 55%, #fff8fc 100%)",
         display: "flex",
         alignItems: "center"
       }}
@@ -53,7 +54,16 @@ function LandingPage() {
         <Grid container spacing={4} alignItems="center">
           <Grid size={{ xs: 12, md: 7 }}>
             <Stack spacing={2.5}>
-              <Chip label="JobCopilot" color="primary" sx={{ width: "fit-content" }} />
+              <Chip
+                label="JobCopilot"
+                color="primary"
+                sx={{
+                  width: "fit-content",
+                  color: "#fff",
+                  bgcolor: "primary.main",
+                  boxShadow: "0 8px 24px rgba(214, 51, 132, 0.3)"
+                }}
+              />
               <Typography variant="h2" fontWeight={800} sx={{ fontSize: { xs: 38, md: 56 } }}>
                 Land interviews faster with an AI copilot
               </Typography>
@@ -65,7 +75,12 @@ function LandingPage() {
                 <Button href="/signup" variant="contained" size="large">
                   Sign up
                 </Button>
-                <Button href="/login" variant="outlined" size="large">
+                <Button
+                  href="/login"
+                  variant="outlined"
+                  size="large"
+                  sx={{ borderColor: "rgba(214, 51, 132, 0.35)", color: "primary.dark" }}
+                >
                   Sign in
                 </Button>
               </Stack>
@@ -74,7 +89,16 @@ function LandingPage() {
           <Grid size={{ xs: 12, md: 5 }}>
             <Stack spacing={2}>
               {highlights.map((item) => (
-                <Card key={item.title} elevation={0} sx={{ borderRadius: 3, border: "1px solid #dde5ff" }}>
+                <Card
+                  key={item.title}
+                  elevation={0}
+                  sx={{
+                    borderRadius: 4,
+                    border: "1px solid rgba(214, 51, 132, 0.2)",
+                    backdropFilter: "blur(8px)",
+                    backgroundColor: "rgba(255, 255, 255, 0.82)"
+                  }}
+                >
                   <CardContent>
                     <Stack direction="row" spacing={1.5} alignItems="center">
                       {item.icon}
