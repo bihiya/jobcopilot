@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JobCopilot Prefill</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <h1>JobCopilot Prefill</h1>
+      <p class="hint">Paste your app origin and prefill session key, then run on the current tab.</p>
+
+      <label for="origin">App origin</label>
+      <input id="origin" type="url" placeholder="https://app.jobcopilot.com" />
+
+      <label for="sessionKey">Prefill session key</label>
+      <input id="sessionKey" type="text" placeholder="session key" />
+
+      <div class="actions">
+        <button id="save" type="button" class="secondary">Save</button>
+        <button id="run" type="button">Run prefill</button>
+      </div>
+
+      <a id="dashboardLink" href="#" target="_blank" rel="noreferrer">Open dashboard to generate a new key</a>
+      <p id="status" aria-live="polite"></p>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

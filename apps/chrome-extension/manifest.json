@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "JobCopilot Prefill Helper",
+  "description": "Inject JobCopilot prefill scripts on supported application pages.",
+  "version": "0.1.0",
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "JobCopilot Prefill",
+    "default_popup": "popup.html"
+  }
+}

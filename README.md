@@ -167,3 +167,6 @@ When blocked, responses are structured (non-crashing) with blocker details:
 ## Example frontend calls
 
 See `apps/web/app/api/profile/examples.js` for example `fetch` calls to profile and process routes.
+## Chrome extension (prefill helper)
+
+A basic Chrome extension is available at `apps/chrome-extension` to inject prefill scripts without using a bookmarklet. See `apps/chrome-extension/README.md` for setup and usage.
